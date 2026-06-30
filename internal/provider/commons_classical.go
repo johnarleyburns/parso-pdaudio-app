@@ -22,7 +22,6 @@ type ClassicalCategoriesProvider struct {
 	RootCategory       string
 	MaxDepth           int
 	SkipSubcatPatterns []string
-	FormatPreference   []string
 	MinBytes           int64
 	MinDurationSec     float64
 	LicensePolicy      string // "strict" or "attribution"
@@ -379,6 +378,9 @@ func (p *ClassicalCategoriesProvider) resolveFiles(ctx context.Context, composer
 				continue
 			}
 			ii := page.ImageInfo[0]
+			if ii.URL == "" {
+				continue
+			}
 			ext := strings.ToLower(path.Ext(page.Title))
 
 			// B.3.1 Audio mime gate

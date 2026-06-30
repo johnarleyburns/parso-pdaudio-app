@@ -77,8 +77,6 @@ func Resolve(requested []string) ([]string, error) {
 // BuildOpts carries optional configuration needed by specific provider modes.
 type BuildOpts struct {
 	AllowAttribution bool
-	AllowFlac        bool
-	Prefer           []string
 }
 
 // Build constructs Provider instances for the given source keys.
@@ -106,32 +104,11 @@ func Build(keys []string, client *provider.Client, opts *BuildOpts) ([]provider.
 				if opts.AllowAttribution {
 					policy = "attribution"
 				}
-				pref := opts.Prefer
-				if opts.AllowFlac {
-					hasFlac := false
-					for _, p := range pref {
-						if p == "flac" {
-							hasFlac = true
-							break
-						}
-					}
-					if !hasFlac {
-						// insert flac after ogg
-						pref = make([]string, 0, len(opts.Prefer)+1)
-						for _, p := range opts.Prefer {
-							pref = append(pref, p)
-							if p == "ogg" {
-								pref = append(pref, "flac")
-							}
-						}
-					}
-				}
 				out = append(out, &provider.ClassicalCategoriesProvider{
 					SourceKey:          k,
 					RootCategory:       "Category:Audio files of classical music by composer",
 					MaxDepth:           3,
 					SkipSubcatPatterns: []string{"MIDI files", "Synthesized", "Sheet music", "Scores", "metronome"},
-					FormatPreference:   pref,
 					MinBytes:           250000,
 					MinDurationSec:     30,
 					LicensePolicy:      policy,

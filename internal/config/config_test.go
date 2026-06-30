@@ -2,6 +2,15 @@ package config
 
 import "testing"
 
+func hasFormat(list []string, f string) bool {
+	for _, x := range list {
+		if x == f {
+			return true
+		}
+	}
+	return false
+}
+
 func TestParseDefaults(t *testing.T) {
 	c, err := Parse(nil)
 	if err != nil {
@@ -10,8 +19,20 @@ func TestParseDefaults(t *testing.T) {
 	if c.Dir != "./library" || c.OpusBitrate != 128 || c.Packager != "go" {
 		t.Fatalf("bad defaults: %+v", c)
 	}
-	if len(c.Prefer) != 4 || c.Prefer[0] != "opus" || c.Prefer[3] != "mp3" {
+	if len(c.Prefer) < 4 || c.Prefer[0] != "opus" || c.Prefer[3] != "mp3" {
 		t.Fatalf("bad prefer: %v", c.Prefer)
+	}
+	if !c.CommonsAllowFlac {
+		t.Fatal("CommonsAllowFlac should default to true")
+	}
+	if !hasFormat(c.Prefer, "flac") {
+		t.Fatal("CommonsAllowFlac=true should add flac to Prefer")
+	}
+	if c.CommonsAllowAttribution {
+		t.Fatal("CommonsAllowAttribution should default to false")
+	}
+	if c.MinDurationSec != 30 {
+		t.Fatalf("MinDurationSec should default to 30, got %f", c.MinDurationSec)
 	}
 	if len(c.Sources) != 1 || c.Sources[0] != "all" {
 		t.Fatalf("bad sources: %v", c.Sources)

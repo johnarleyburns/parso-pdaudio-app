@@ -63,8 +63,6 @@ func run(args []string) error {
 	client := provider.NewClient(cfg.UserAgent)
 	provs, err := sources.Build(keys, client, &sources.BuildOpts{
 		AllowAttribution: cfg.CommonsAllowAttribution,
-		AllowFlac:        cfg.CommonsAllowFlac,
-		Prefer:           cfg.Prefer,
 	})
 	if err != nil {
 		return err

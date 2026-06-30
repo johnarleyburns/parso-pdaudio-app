@@ -31,9 +31,7 @@ func TestResolveSubsetAndUnknown(t *testing.T) {
 
 func TestBuildProviders(t *testing.T) {
 	client := provider.NewClient("test/1.0")
-	provs, err := Build(Keys(), client, &BuildOpts{
-		Prefer: []string{"opus", "ogg", "wav", "mp3"},
-	})
+	provs, err := Build(Keys(), client, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,8 +58,6 @@ func TestBuildClassicalProviderOptions(t *testing.T) {
 	client := provider.NewClient("test/1.0")
 	provs, err := Build([]string{"commons_classical"}, client, &BuildOpts{
 		AllowAttribution: true,
-		AllowFlac:        true,
-		Prefer:           []string{"opus", "ogg", "wav", "mp3"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -90,9 +86,7 @@ func TestBuildClassicalProviderOptions(t *testing.T) {
 	}
 
 	// Test strict mode
-	provs2, _ := Build([]string{"commons_classical"}, client, &BuildOpts{
-		Prefer: []string{"opus", "ogg"},
-	})
+	provs2, _ := Build([]string{"commons_classical"}, client, nil)
 	cp2 := provs2[0].(*provider.ClassicalCategoriesProvider)
 	if cp2.LicensePolicy != "strict" {
 		t.Fatalf("default LicensePolicy = %q, want strict", cp2.LicensePolicy)

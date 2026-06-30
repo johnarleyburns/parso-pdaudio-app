@@ -97,6 +97,20 @@ func Parse(args []string) (*Config, error) {
 	}
 	cfg.Sources = splitCSV(*sources)
 
+	// --commons-allow-flac (default true): ensure flac is in the format preference list.
+	if cfg.CommonsAllowFlac {
+		hasFlac := false
+		for _, f := range cfg.Prefer {
+			if f == "flac" {
+				hasFlac = true
+				break
+			}
+		}
+		if !hasFlac {
+			cfg.Prefer = append(cfg.Prefer, "flac")
+		}
+	}
+
 	if cfg.Packager != "go" && cfg.Packager != "ffmpeg" {
 		return nil, fmt.Errorf("invalid --packager %q (want go|ffmpeg)", cfg.Packager)
 	}
