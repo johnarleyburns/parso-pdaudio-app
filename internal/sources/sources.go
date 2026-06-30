@@ -16,7 +16,7 @@ type Entry struct {
 
 // Order is the canonical display/processing order of sources.
 var Order = []string{
-	"chopin", "beethoven_pitman", "marine", "army",
+	"chopin", "bach_wtc1", "goldberg", "beethoven_pitman", "marine", "army",
 	"navy", "airforce", "coastguard", "spaceforce",
 }
 
@@ -32,6 +32,14 @@ var manifest = map[string]spec{
 	"chopin": {
 		provider: "ia", iaID: "musopen-chopin", iaComposer: "Frédéric Chopin",
 		note: "CC0; Ogg Vorbis derivatives preferred",
+	},
+	"bach_wtc1": {
+		provider: "ia", iaID: "bach-well-tempered-clavier-book-1", iaComposer: "Johann Sebastian Bach",
+		note: "Well-Tempered Clavier Book 1, public domain recordings",
+	},
+	"goldberg": {
+		provider: "ia", iaID: "The_Open_Goldberg_Variations-11823", iaComposer: "Johann Sebastian Bach",
+		note: "Open Goldberg Variations, CC0 public domain",
 	},
 	"beethoven_pitman": {
 		provider: "commons", commonsQ: `Beethoven Sonata Musopen`,

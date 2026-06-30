@@ -40,7 +40,7 @@ it verbatim.
 
 Build a single statically-linkable Go executable (`parso-pdaudio`) that:
 
-- Pulls recordings from the **eight sources** in §2.
+- Pulls recordings from the **ten sources** in §2.
 - For each track: downloads the best-available native file (format preference **opus > ogg > wav >
   mp3**), converts it to a canonical `.opus`, packages a sibling `.caf`, then deletes the native
   download (keeping only `.opus` + `.caf`).
@@ -63,6 +63,8 @@ registry (code or a small embedded JSON). Counts are approximate live results an
 | key | provider | locator | native formats present | license | notes |
 |---|---|---|---|---|---|
 | `chopin` | `ia` | item `musopen-chopin` | **Ogg Vorbis**, VBR MP3, Apple Lossless | CC0 (`publicdomain/zero/1.0`) | 82 ALAC originals → 104 derived audio files. Clean. Preference picks the **Ogg Vorbis** derivative. |
+| `bach_wtc1` | `ia` | item `bach-well-tempered-clavier-book-1` | Ogg Vorbis, MP3, FLAC, WAV | PD | Well-Tempered Clavier Book 1, multiple performers, public domain recordings. |
+| `goldberg` | `ia` | item `The_Open_Goldberg_Variations-11823` | Ogg Vorbis, MP3, FLAC | CC0 | Kimiko Ishizaka's Open Goldberg Variations, CC0 dedicated. |
 | `beethoven_pitman` | `commons` | search `"Beethoven" "Pitman" filetype:audio` (Paul Pitman, 32 sonatas) | **Ogg Vorbis** (`.ogg`) | PD | **Not on IA** (all plausible identifiers return `{}`). Commons only, Ogg. ~60–70 candidate files; filter to the Pitman performances (see §6.2 dedup/grouping). |
 | `marine` | `commons` | search `"United States Marine Band" filetype:audio` | mostly Ogg/Opus/WAV, some MP3 | PD-USGov (mostly) | ~523 audio hits; includes false positives — filter by `audio/*` mime + dedup by work. |
 | `army` | `commons` | search `"United States Army Band" filetype:audio` | mixed | PD-USGov (mostly) | ~197 audio hits. |

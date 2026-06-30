@@ -11,8 +11,8 @@ func TestResolveAll(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(keys) != 8 {
-		t.Fatalf("want 8 sources, got %d: %v", len(keys), keys)
+	if len(keys) != 10 {
+		t.Fatalf("want 10 sources, got %d: %v", len(keys), keys)
 	}
 	if keys[0] != "chopin" {
 		t.Fatalf("first source should be chopin, got %q", keys[0])
@@ -35,8 +35,8 @@ func TestBuildProviders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(provs) != 8 {
-		t.Fatalf("want 8 providers, got %d", len(provs))
+	if len(provs) != 10 {
+		t.Fatalf("want 10 providers, got %d", len(provs))
 	}
 	var ia, commons int
 	for _, p := range provs {
@@ -47,7 +47,7 @@ func TestBuildProviders(t *testing.T) {
 			commons++
 		}
 	}
-	if ia != 1 || commons != 7 {
-		t.Fatalf("want 1 ia + 7 commons, got ia=%d commons=%d", ia, commons)
+	if ia != 3 || commons != 7 {
+		t.Fatalf("want 3 ia + 7 commons, got ia=%d commons=%d", ia, commons)
 	}
 }

@@ -8,7 +8,7 @@ and listen to downloaded tracks to verify them on the spot.
 
 ## What it does
 
-- Pulls recordings from **8 sources** (1 Internet Archive item + 7 Wikimedia Commons searches).
+- Pulls recordings from **10 sources** (3 Internet Archive items + 7 Wikimedia Commons searches).
 - For each track: downloads the best-available native file (preference `opus > ogg > wav > mp3`),
   converts it to a canonical `.opus`, packages a sibling `.caf`, then deletes the native download.
 - Stores the SQLite DB and all media in one flat directory; records structured metadata, license,
@@ -37,7 +37,7 @@ go build -o parso-pdaudio .
 # Download just the Chopin set, with the TUI:
 ./parso-pdaudio --sources chopin
 
-# Everything (8 sources), headless, for unattended/bulk pulls:
+# Everything (10 sources), headless, for unattended/bulk pulls:
 ./parso-pdaudio --sources all --no-tui
 
 # Grab a quick sample to listen to, then browse it:
@@ -82,6 +82,8 @@ On macOS the player decodes the produced `.caf` through CoreAudio, doubling as a
 | key | provider | content | license |
 |---|---|---|---|
 | `chopin` | Internet Archive (`musopen-chopin`) | ~104 Chopin tracks (Ogg Vorbis derivatives) | CC0 |
+| `bach_wtc1` | Internet Archive (`bach-well-tempered-clavier-book-1`) | Well-Tempered Clavier Book 1 | PD |
+| `goldberg` | Internet Archive (`The_Open_Goldberg_Variations-11823`) | Open Goldberg Variations | CC0 |
 | `beethoven_pitman` | Commons (`"Beethoven" "Pitman"`) | Paul Pitman sonatas (Ogg) | PD |
 | `marine` / `army` / `navy` / `airforce` / `coastguard` | Commons (band name) | US military band recordings (mixed) | PD-USGov mostly |
 | `spaceforce` | Commons | ~empty by design (band founded 2020) | — |

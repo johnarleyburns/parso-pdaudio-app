@@ -242,7 +242,7 @@ func (m Model) renderTracks(h int) string {
 		bodyH = 1
 	}
 
-	header := " " + headerStyle.Render(fmt.Sprintf("%-7s %-14s %-16s %-40s %s", "ST", "SOURCE", "COMPOSER", "TITLE", "SIZE"))
+	header := " " + headerStyle.Render(fmt.Sprintf("%-7s %-12s %-14s %-60s %s", "ST", "SOURCE", "COMPOSER", "TITLE", "SIZE"))
 	q := m.search.Value()
 	info := fmt.Sprintf("%d shown", len(m.tracks))
 	if q != "" {
@@ -328,7 +328,7 @@ func trackRow(t *core.Track, nowID string) string {
 	if t.Status == core.StatusDone {
 		size = fmt.Sprintf("opus %s caf %s", human(t.OpusBytes), human(t.CafBytes))
 	}
-	return fmt.Sprintf("%s %-4s %-14s %-16s %-40s %s", now, state, src, truncate(cmp, 14), truncate(title, 38), size)
+	return fmt.Sprintf("%s %-4s %-12s %-14s %-60s %s", now, state, src, truncate(cmp, 12), truncate(title, 58), size)
 }
 
 func (m Model) renderPlayerTab(h int) string {
