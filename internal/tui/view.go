@@ -242,7 +242,7 @@ func (m Model) renderTracks(h int) string {
 		bodyH = 1
 	}
 
-	header := headerStyle.Render(fmt.Sprintf("%-4s %-16s %-30s %s", "ST", "SOURCE", "TITLE", "SIZE"))
+	header := "  " + headerStyle.Render(fmt.Sprintf("%-4s %-16s %-30s %s", "ST", "SOURCE", "TITLE", "SIZE"))
 	q := m.search.Value()
 	info := fmt.Sprintf("%d shown", len(m.tracks))
 	if q != "" {
@@ -251,7 +251,7 @@ func (m Model) renderTracks(h int) string {
 	header += dimStyle.Render("  " + info)
 
 	start := 0
-	rows := bodyH - 1
+	rows := bodyH - 2 // header + blank line
 	if rows < 1 {
 		rows = 1
 	}
@@ -263,6 +263,10 @@ func (m Model) renderTracks(h int) string {
 		end = len(m.tracks)
 	}
 
+	contentW := m.width - 6 // box outer(m.width-2) - border(2) - padding(2)
+	if contentW < 20 {
+		contentW = 20
+	}
 	var lines []string
 	if len(m.tracks) == 0 {
 		lines = append(lines, dimStyle.Render("(no tracks yet — discovery/downloads in progress)"))
@@ -271,14 +275,15 @@ func (m Model) renderTracks(h int) string {
 		t := m.tracks[i]
 		line := trackRow(t, m.nowPlaying)
 		if i == m.sel {
-			lines = append(lines, selStyle.Render(padRight("> "+line, m.width-20)))
+			lines = append(lines, selStyle.Render(padRight("> "+line, contentW)))
 		} else {
-			lines = append(lines, "  "+truncate(line, m.width-22))
+			lines = append(lines, "  "+line)
 		}
 	}
+	lines = append([]string{header, ""}, lines...)
 	body := strings.Join(lines, "\n")
 
-	return searchLine + "\n" + header + "\n" + boxStyle.Width(m.width-2).Render(body)
+	return searchLine + "\n" + boxStyle.Width(m.width-2).Render(body)
 }
 
 func trackRow(t *core.Track, nowID string) string {
@@ -290,7 +295,20 @@ func trackRow(t *core.Track, nowID string) string {
 	if len(st) > 4 {
 		st = st[:4]
 	}
-	state := statusGlyph(t) + st
+	var glyph string
+	switch t.Status {
+	case core.StatusDone:
+		glyph = "●"
+	case core.StatusFailed:
+		glyph = "✗"
+	case core.StatusSkipped:
+		glyph = "·"
+	case core.StatusDiscovered:
+		glyph = "○"
+	default:
+		glyph = "◐"
+	}
+	state := glyph + st
 	src := truncate(t.Source, 14)
 	name := displayTitle(t)
 	size := ""
@@ -407,20 +425,6 @@ func (m Model) totalRate() float64 {
 	return sum
 }
 
-func statusGlyph(t *core.Track) string {
-	switch t.Status {
-	case core.StatusDone:
-		return okStyle.Render("●")
-	case core.StatusFailed:
-		return failStyle.Render("✗")
-	case core.StatusSkipped:
-		return dimStyle.Render("·")
-	case core.StatusDiscovered:
-		return dimStyle.Render("○")
-	default:
-		return playStyle.Render("◐")
-	}
-}
 
 func displayTitle(t *core.Track) string {
 	name := t.Title
