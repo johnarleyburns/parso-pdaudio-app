@@ -10,7 +10,6 @@ import (
 	"github.com/johnarleyburns/parso-pdaudio/internal/pipeline"
 )
 
-// Update is the Bubble Tea event loop.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -25,8 +24,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, listenResults(m.eng.Results)
 
 	case playerMsg:
+		m.posSec = msg.PosSec
+		m.durSec = msg.DurSec
+		m.playState = msg.State
+		if msg.Err != "" {
+			m.playerErr = msg.Err
+			m.statusLine = "playback error: " + msg.Err
+		}
 		if msg.Ended && m.nowPlaying != "" {
 			m.nowPlaying = ""
+			m.nowTitle = ""
+			m.playerErr = ""
 			if msg.Err != "" {
 				m.statusLine = "playback error: " + msg.Err
 			} else {
@@ -37,6 +45,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case countsMsg:
 		m.counts = msg.counts
+		m.pending = msg.pending
 		return m, nil
 
 	case tracksMsg:
@@ -73,15 +82,16 @@ func (m Model) onTick(t time.Time) (tea.Model, tea.Cmd) {
 	m.bytesAccum = 0
 	m.updateRates(dt)
 	m.tickCount++
+	m.workers = m.eng.Workers()
+	m.logLines = m.eng.LogLines()
 
 	cmds := []tea.Cmd{tickCmd(), m.reconcileCmd()}
-	if m.tickCount%2 == 0 && !m.searchActive {
+	if m.tickCount%2 == 0 {
 		cmds = append(cmds, m.refreshTracksCmd(m.search.Value()))
 	}
 	return m, tea.Batch(cmds...)
 }
 
-// updateRates maintains a per-source EWMA of track-completion rate for ETA.
 func (m *Model) updateRates(dt float64) {
 	const alpha = 0.2
 	for _, src := range m.order {
@@ -124,18 +134,35 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.play.Stop()
 		return m, tea.Quit
 
+	case "1":
+		m.tab = tabDashboard
+		return m, nil
+	case "2":
+		m.tab = tabTracks
+		return m, nil
+	case "3":
+		m.tab = tabPlayer
+		return m, nil
+	case "4":
+		m.tab = tabLog
+		return m, nil
+	case "tab":
+		m.tab = (m.tab + 1) % tabCount
+		return m, nil
+
 	case "/":
 		m.searchActive = true
 		m.search.Focus()
 		return m, nil
 
 	case "s":
-		m.eng.SetPaused(false)
-		m.statusLine = "running"
-		return m, nil
-	case "p":
-		m.eng.SetPaused(true)
-		m.statusLine = "paused"
+		if m.eng.Paused() {
+			m.eng.SetPaused(false)
+			m.statusLine = "running"
+		} else {
+			m.eng.SetPaused(true)
+			m.statusLine = "paused"
+		}
 		return m, nil
 
 	case "r":
@@ -149,6 +176,11 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "R":
 		n, _ := m.eng.RetryFailed(m.ctx)
 		m.statusLine = "retry: reset " + strconv.Itoa(int(n)) + " failed rows"
+		return m, m.reconcileCmd()
+
+	case "V":
+		n, _ := m.eng.ReviveSkipped(m.ctx)
+		m.statusLine = "revive: reset " + strconv.Itoa(int(n)) + " skipped rows"
 		return m, m.reconcileCmd()
 
 	case "d":
@@ -165,18 +197,19 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "-", "_":
 		m.eng.Scale(poolStages[m.focusPool], -1)
 
-	case "tab":
-		m.focusPool = (m.focusPool + 1) % len(poolStages)
-
 	case "up", "ctrl+p":
-		if m.sel > 0 {
-			m.sel--
-			m.rememberSelection()
+		if m.tab == tabTracks || m.tab == tabDashboard {
+			if m.sel > 0 {
+				m.sel--
+				m.rememberSelection()
+			}
 		}
 	case "down", "ctrl+n":
-		if m.sel < len(m.tracks)-1 {
-			m.sel++
-			m.rememberSelection()
+		if m.tab == tabTracks || m.tab == tabDashboard {
+			if m.sel < len(m.tracks)-1 {
+				m.sel++
+				m.rememberSelection()
+			}
 		}
 	case "g", "home":
 		m.sel = 0
@@ -190,9 +223,19 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		return m, m.playSelected()
 	case " ", "space":
-		m.play.Stop()
-		m.nowPlaying = ""
-		m.statusLine = "stopped"
+		if m.play.Playing() || m.play.Current() != "" {
+			if m.play.Playing() {
+				m.play.Pause()
+			} else {
+				m.play.Resume()
+			}
+		} else {
+			return m, m.playSelected()
+		}
+	case "right":
+		m.play.Seek(10)
+	case "left":
+		m.play.Seek(-10)
 	}
 	return m, nil
 }
@@ -213,7 +256,8 @@ func (m *Model) playSelected() tea.Cmd {
 	path := m.play.PreferredPath(m.cfg.Dir, t.OpusPath, t.CafPath)
 	m.play.Play(path)
 	m.nowPlaying = t.ID
-	m.statusLine = "playing: " + displayTitle(t)
+	m.nowTitle = displayTitle(t)
+	m.statusLine = "playing: " + m.nowTitle
 	return nil
 }
 

@@ -20,7 +20,7 @@ type Provider interface {
 	Discover(ctx context.Context, cursor string) (cands []core.Candidate, nextCursor string, done bool, err error)
 }
 
-// Client is a polite HTTP client with a descriptive UA and retry/backoff.
+// Client is a polite HTTP client with a descriptive UA, retry/backoff.
 type Client struct {
 	HTTP      *http.Client
 	UserAgent string
@@ -34,7 +34,8 @@ func NewClient(ua string) *Client {
 	}
 }
 
-// GetJSON fetches url and returns the body, retrying on 429/5xx/maxlag.
+// GetBytes fetches url and returns the body, retrying on 429/5xx/maxlag
+// and respecting Retry-After headers.
 func (c *Client) GetBytes(ctx context.Context, url string) ([]byte, error) {
 	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
@@ -65,6 +66,15 @@ func (c *Client) GetBytes(ctx context.Context, url string) ([]byte, error) {
 		}
 		if resp.StatusCode == 429 || resp.StatusCode >= 500 {
 			lastErr = fmt.Errorf("http %d", resp.StatusCode)
+			if ra := resp.Header.Get("Retry-After"); ra != "" {
+				if sec, perr := strconv.Atoi(ra); perr == nil && sec > 0 {
+					select {
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					case <-time.After(time.Duration(sec) * time.Second):
+					}
+				}
+			}
 			continue
 		}
 		return nil, fmt.Errorf("http %d for %s", resp.StatusCode, url)

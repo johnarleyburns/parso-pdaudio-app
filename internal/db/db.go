@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS tracks (
     worker          TEXT,
     attempts        INTEGER NOT NULL DEFAULT 0,
     stage_error     TEXT,
+    next_attempt_at INTEGER,
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL,
     UNIQUE(source, original_url)
@@ -104,6 +105,9 @@ func Open(dir string) (*DB, error) {
 		_ = sdb.Close()
 		return nil, fmt.Errorf("schema: %w", err)
 	}
+	// Add next_attempt_at for existing DBs created before this column existed.
+	_, _ = sdb.ExecContext(context.Background(),
+		`ALTER TABLE tracks ADD COLUMN next_attempt_at INTEGER`)
 	return &DB{sql: sdb, dir: dir}, nil
 }
 
@@ -159,19 +163,23 @@ ON CONFLICT(source, original_url) DO NOTHING`,
 
 // Claim atomically moves one row from `from` to `to` (single-statement
 // UPDATE...RETURNING under the write lock) and returns it. ok=false if none.
+// Rows with a future next_attempt_at are skipped (cooldown).
 func (d *DB) Claim(ctx context.Context, from, to, worker string) (*core.Track, bool, error) {
 	row := d.sql.QueryRowContext(ctx, `
 UPDATE tracks
    SET status=?, worker=?, updated_at=?
- WHERE id = (SELECT id FROM tracks WHERE status=? ORDER BY created_at LIMIT 1)
+ WHERE id = (SELECT id FROM tracks
+               WHERE status=?
+                 AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+               ORDER BY created_at LIMIT 1)
 RETURNING id, source, source_item, original_url, original_format,
-          original_codec, opus_path, caf_path`,
-		to, worker, now(), from)
+          original_codec, opus_path, caf_path, title, composer`,
+		to, worker, now(), from, now())
 
 	t := &core.Track{Status: to}
-	var item, codec, opus, caf sql.NullString
+	var item, codec, opus, caf, title, composer sql.NullString
 	err := row.Scan(&t.ID, &t.Source, &item, &t.OriginalURL, &t.OriginalFormat,
-		&codec, &opus, &caf)
+		&codec, &opus, &caf, &title, &composer)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
@@ -182,6 +190,8 @@ RETURNING id, source, source_item, original_url, original_format,
 	t.OriginalCodec = codec.String
 	t.OpusPath = opus.String
 	t.CafPath = caf.String
+	t.Title = title.String
+	t.Composer = composer.String
 	return t, true, nil
 }
 
@@ -467,4 +477,29 @@ func trunc(s string, n int) string {
 		return s[:n]
 	}
 	return s
+}
+
+// ReviveSkipped promotes cap or transiently skipped rows back to discovered
+// so they can be retried. Dedup/license skips are left alone.
+func (d *DB) ReviveSkipped(ctx context.Context) (int64, error) {
+	res, err := d.sql.ExecContext(ctx, `
+UPDATE tracks SET status=?, worker=NULL, attempts=0, stage_error=NULL,
+  next_attempt_at=NULL, updated_at=?
+WHERE status='skipped' AND stage_error IS NOT NULL
+  AND (stage_error LIKE 'cap:%' OR stage_error LIKE 'requeue:%')`,
+		core.StatusDiscovered, now())
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// MarkRequeued sets a track back to discovered with a cooldown so it is not
+// immediately re-claimed (rate-limit/retry-after backoff).
+func (d *DB) MarkRequeued(ctx context.Context, id string, cooldownSec int) error {
+	cooldown := now() + int64(cooldownSec)
+	return d.update(ctx,
+		`UPDATE tracks SET status=?, stage_error=?, attempts=attempts+1,
+		 worker=NULL, next_attempt_at=?, updated_at=? WHERE id=?`,
+		core.StatusDiscovered, "requeue: rate-limited", cooldown, now(), id)
 }

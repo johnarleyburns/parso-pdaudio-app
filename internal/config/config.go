@@ -25,6 +25,8 @@ type Config struct {
 	MaxAttempts        int
 	MaxTracks          int
 	CommonsConcurrency int
+	CommonsReqPerSec   float64
+	ResetSkipped       bool
 	NoTUI              bool
 	PlayOnly           bool
 	UserAgent          string
@@ -51,7 +53,9 @@ func Parse(args []string) (*Config, error) {
 		cleanW      = fs.Int("clean-workers", 1, "initial cleaner pool size")
 		maxAtt      = fs.Int("max-attempts", 3, "per-stage retry ceiling")
 		maxTracks   = fs.Int("max-tracks", 0, "cap total tracks processed this run (0 = unlimited)")
-		commonsConc = fs.Int("commons-concurrency", 4, "max parallel Commons GETs")
+		commonsConc = fs.Int("commons-concurrency", 2, "max parallel Commons GETs")
+		commonsRPS  = fs.Float64("commons-rate", 0.5, "Commons download requests per second per host")
+		resetSkip   = fs.Bool("reset-skipped", false, "reset cap-skipped rows to discovered on startup")
 		noTUI       = fs.Bool("no-tui", false, "headless mode (log progress)")
 		playOnly    = fs.Bool("play", false, "open the player UI only (no pipeline)")
 		ua          = fs.String("user-agent", defaultUserAgent, "HTTP User-Agent")
@@ -76,6 +80,8 @@ func Parse(args []string) (*Config, error) {
 		MaxAttempts:        *maxAtt,
 		MaxTracks:          *maxTracks,
 		CommonsConcurrency: *commonsConc,
+		CommonsReqPerSec:   *commonsRPS,
+		ResetSkipped:       *resetSkip,
 		NoTUI:              *noTUI,
 		PlayOnly:           *playOnly,
 		UserAgent:          *ua,
@@ -90,6 +96,9 @@ func Parse(args []string) (*Config, error) {
 	}
 	if cfg.CommonsConcurrency < 1 {
 		cfg.CommonsConcurrency = 1
+	}
+	if cfg.CommonsReqPerSec <= 0 {
+		cfg.CommonsReqPerSec = 0.5
 	}
 	return cfg, nil
 }

@@ -70,6 +70,14 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+
+	if cfg.ResetSkipped {
+		if n, err := eng.ReviveSkipped(ctx); err != nil {
+			return fmt.Errorf("revive skipped: %w", err)
+		} else if n > 0 {
+			fmt.Fprintf(os.Stderr, "reset-skipped: revived %d rows\n", n)
+		}
+	}
 	if !eng.ConvertEnabled() {
 		fmt.Fprintln(os.Stderr, "WARNING: ffmpeg/ffprobe not found on PATH — "+
 			"convert/package/cleaner stages are disabled (downloads still run).")

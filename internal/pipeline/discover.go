@@ -10,13 +10,11 @@ import (
 	"github.com/johnarleyburns/parso-pdaudio/internal/provider"
 )
 
-// Discover runs discovery for every configured provider, selecting the best
-// format per candidate and inserting tracks. It is idempotent and resumable.
 func (e *Engine) Discover(ctx context.Context) error {
+	e.SetDiscovering(true)
+	defer e.SetDiscovering(false)
 	for _, p := range e.providers {
 		if err := e.discoverOne(ctx, p); err != nil {
-			// Per the spec, an empty/zero source must not abort the run. Log via
-			// a failed progress message but keep going.
 			e.emit(core.ProgressMsg{Source: p.Key(), Stage: StageDiscover, Failed: true, Err: err.Error()})
 		}
 	}
@@ -56,13 +54,12 @@ func (e *Engine) discoverOne(ctx context.Context, p provider.Provider) error {
 func (e *Engine) ingest(ctx context.Context, source string, cand *core.Candidate) error {
 	best, ok := provider.SelectBest(cand.Files, e.rank, e.cfg.AllowFallback)
 
-	// Determine the URL/format for the row (chosen, else first variant).
 	rowFile := best
 	if !ok && len(cand.Files) > 0 {
 		rowFile = cand.Files[0]
 	}
 	if rowFile.URL == "" {
-		return nil // nothing usable
+		return nil
 	}
 
 	id := ulid.Make().String()
@@ -102,6 +99,19 @@ func (e *Engine) ingest(ctx context.Context, source string, cand *core.Candidate
 	if inserted {
 		if t.Status == core.StatusDiscovered {
 			e.discoveredCount.Add(1)
+		}
+		if t.Status == core.StatusSkipped {
+			reason := ""
+			if e.capReached() {
+				reason = "cap: max tracks reached"
+			} else if !ok {
+				reason = "no preferred format"
+			} else {
+				reason = "license not allowed"
+			}
+			if reason != "" {
+				_ = e.store.MarkSkipped(ctx, id, reason)
+			}
 		}
 		e.emit(core.ProgressMsg{
 			Source:  source,

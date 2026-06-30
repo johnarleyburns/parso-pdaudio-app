@@ -16,11 +16,18 @@ import (
 	"github.com/johnarleyburns/parso-pdaudio/internal/player"
 )
 
-// stages tracked in the per-source dashboard.
 var poolStages = []string{
 	pipeline.StageDownload, pipeline.StageConvert,
 	pipeline.StagePackage, pipeline.StageCleaner,
 }
+
+const tabCount = 4
+const (
+	tabDashboard = iota
+	tabTracks
+	tabPlayer
+	tabLog
+)
 
 // Messages.
 type (
@@ -29,6 +36,9 @@ type (
 	tickMsg     time.Time
 	tracksMsg   struct{ tracks []*core.Track }
 	discoverMsg struct{ err error }
+	workerMsg   struct{ workers []pipeline.WorkerStatus }
+	pendingMsg  struct{ pending map[string]int }
+	logsMsg     struct{ lines []string }
 )
 
 type srcRate struct {
@@ -43,18 +53,24 @@ type Model struct {
 	eng   *pipeline.Engine
 	store *db.DB
 	play  *player.Player
-	order []string // source keys in display order
+	order []string
 
 	width, height int
 
-	counts map[string]map[string]int
-	rates  map[string]*srcRate
+	counts   map[string]map[string]int
+	rates    map[string]*srcRate
+	workers  []pipeline.WorkerStatus
+	pending  map[string]int
+	logLines []string
 
 	bytesAccum int64
 	mbps       float64
 	lastTick   time.Time
 
 	prog progress.Model
+
+	// active tab
+	tab int
 
 	// tracks pane
 	search       textinput.Model
@@ -65,16 +81,21 @@ type Model struct {
 	tickCount    int
 
 	// controls
-	focusPool int // index into poolStages
+	focusPool int
 
-	nowPlaying string // track id
+	// player
+	nowPlaying string
+	nowTitle   string
+	posSec     float64
+	durSec     float64
+	playerErr  string
+	playState  string // loading | playing | paused | stopped
 	statusLine string
 
 	discovering bool
 	playerOnly  bool
 }
 
-// New builds the root model.
 func New(ctx context.Context, cfg *config.Config, eng *pipeline.Engine, store *db.DB, pl *player.Player, order []string, playerOnly bool) Model {
 	ti := textinput.New()
 	ti.Placeholder = "search (FTS): chopin ballade"
@@ -92,15 +113,16 @@ func New(ctx context.Context, cfg *config.Config, eng *pipeline.Engine, store *d
 		order:      order,
 		counts:     map[string]map[string]int{},
 		rates:      map[string]*srcRate{},
+		pending:    map[string]int{},
 		prog:       p,
 		search:     ti,
 		focusPool:  0,
 		lastTick:   time.Now(),
 		playerOnly: playerOnly,
+		tab:        tabDashboard,
 	}
 }
 
-// Init starts background discovery and the listener/tick loops.
 func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{
 		listenResults(m.eng.Results),
@@ -118,11 +140,23 @@ func (m Model) Init() tea.Cmd {
 // --- commands ---
 
 func listenResults(ch <-chan core.ProgressMsg) tea.Cmd {
-	return func() tea.Msg { return progressMsg(<-ch) }
+	return func() tea.Msg {
+		msg, ok := <-ch
+		if !ok {
+			return progressMsg{}
+		}
+		return progressMsg(msg)
+	}
 }
 
 func listenPlayer(ch <-chan player.Event) tea.Cmd {
-	return func() tea.Msg { return playerMsg(<-ch) }
+	return func() tea.Msg {
+		msg, ok := <-ch
+		if !ok {
+			return playerMsg{}
+		}
+		return playerMsg(msg)
+	}
 }
 
 func tickCmd() tea.Cmd {
@@ -139,16 +173,21 @@ func (m Model) discoverCmd() tea.Cmd {
 func (m Model) reconcileCmd() tea.Cmd {
 	ctx := m.ctx
 	store := m.store
+	eng := m.eng
 	return func() tea.Msg {
 		c, err := store.Counts(ctx)
 		if err != nil {
-			return tracksMsg{} // ignore; will retry next tick
+			return countsMsg{}
 		}
-		return countsMsg{counts: c}
+		p, _ := eng.PendingByStage(ctx)
+		return countsMsg{counts: c, pending: p}
 	}
 }
 
-type countsMsg struct{ counts map[string]map[string]int }
+type countsMsg struct {
+	counts  map[string]map[string]int
+	pending map[string]int
+}
 
 func (m Model) refreshTracksCmd(query string) tea.Cmd {
 	ctx := m.ctx

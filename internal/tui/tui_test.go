@@ -69,10 +69,25 @@ func TestViewRendersAndNavigates(t *testing.T) {
 	}
 	m = send(m, tracksMsg{tracks: tracks})
 
+	// Switch to Tracks tab (2).
+	m = send(m, key("2"))
+	if m.tab != tabTracks {
+		t.Fatalf("expected tab %d, got %d", tabTracks, m.tab)
+	}
+
 	view := m.View()
-	for _, want := range []string{"parso-pdaudio", "chopin", "marine", "Ballade", "TOTAL", "TRACKS"} {
+	for _, want := range []string{"parso-pdaudio", "Ballade", "TITLE", "Tracks"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
+		}
+	}
+	// Dashboard tab should show sources.
+	m2 := m
+	m2 = send(m2, key("1"))
+	dashView := m2.View()
+	for _, want := range []string{"chopin", "marine"} {
+		if !strings.Contains(dashView, want) {
+			t.Fatalf("dashboard missing %q:\n%s", want, dashView)
 		}
 	}
 
@@ -100,13 +115,14 @@ func TestPauseAndSearchToggle(t *testing.T) {
 	m := newTestModel(t)
 	m = send(m, tea.WindowSizeMsg{Width: 100, Height: 30})
 
-	m = send(m, key("p"))
+	// 's' toggles pause (first press pauses).
+	m = send(m, key("s"))
 	if !m.eng.Paused() {
-		t.Fatal("expected paused after 'p'")
+		t.Fatal("expected paused after 's'")
 	}
 	m = send(m, key("s"))
 	if m.eng.Paused() {
-		t.Fatal("expected running after 's'")
+		t.Fatal("expected running after second 's'")
 	}
 
 	// Search activate/cancel.
@@ -119,10 +135,10 @@ func TestPauseAndSearchToggle(t *testing.T) {
 		t.Fatal("search should be inactive after esc")
 	}
 
-	// Pool focus cycles with tab.
-	before := m.focusPool
+	// Tab switches tabs (1-4), not pool focus. Pool cycling removed from tab.
+	before := m.tab
 	m = send(m, key("tab"))
-	if m.focusPool == before {
-		t.Fatal("tab should change focused pool")
+	if m.tab == before {
+		t.Fatal("tab should change active tab")
 	}
 }

@@ -20,9 +20,10 @@ var (
 	playStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
 	footerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
 	boxStyle    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
+	tabStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Padding(0, 1)
+	tabActive   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("39")).Padding(0, 1)
 )
 
-// statusRank orders pipeline statuses for cumulative funnel counting.
 var statusRank = map[string]int{
 	core.StatusDiscovered: 0, core.StatusDownloading: 1, core.StatusDownloaded: 2,
 	core.StatusConverting: 3, core.StatusConverted: 4, core.StatusPackaging: 5,
@@ -64,21 +65,25 @@ func (m Model) aggregate(src string) srcAgg {
 	return a
 }
 
-// View renders the whole UI.
 func (m Model) View() string {
-	if m.width < 20 || m.height < 12 {
-		return "terminal too small (need >= 20x12)"
+	if m.width < 20 || m.height < 15 {
+		return "terminal too small (need >= 20x15)"
 	}
+
+	headerH := 1
+	tabH := 1
+	footerH := 1
+	bodyH := m.height - headerH - tabH - footerH
+	if bodyH < 4 {
+		bodyH = 4
+	}
+
 	var b strings.Builder
 	b.WriteString(m.renderHeader())
 	b.WriteString("\n")
-	b.WriteString(m.renderSources())
+	b.WriteString(m.renderTabs())
 	b.WriteString("\n")
-	b.WriteString(m.renderTotal())
-	b.WriteString("\n")
-	b.WriteString(m.renderTracks())
-	b.WriteString("\n")
-	b.WriteString(m.renderNowPlaying())
+	b.WriteString(m.renderBody(bodyH))
 	b.WriteString("\n")
 	b.WriteString(m.renderFooter())
 	return b.String()
@@ -88,12 +93,10 @@ func (m Model) renderHeader() string {
 	state := okStyle.Render("running")
 	if m.eng.Paused() {
 		state = failStyle.Render("PAUSED")
+	} else if m.eng.IsThrottled() {
+		state = playStyle.Render("THROTTLED")
 	}
-	disc := ""
-	if m.discovering {
-		disc = dimStyle.Render("  discovering…")
-	}
-	left := titleStyle.Render("parso-pdaudio") + "  [" + state + "]" + disc
+	left := titleStyle.Render("parso-pdaudio") + "  [" + state + "]  " + dimStyle.Render(string(m.eng.Phase()))
 	right := headerStyle.Render(fmt.Sprintf("workers D:%d C:%d P:%d X:%d  pkg:%s",
 		m.eng.PoolSize(pipeline.StageDownload),
 		m.eng.PoolSize(pipeline.StageConvert),
@@ -103,7 +106,74 @@ func (m Model) renderHeader() string {
 	return lineJustify(left, right, m.width)
 }
 
-func (m Model) renderSources() string {
+func (m Model) renderTabs() string {
+	tabs := []string{"1 Dashboard", "2 Tracks", "3 Player", "4 Log"}
+	var parts []string
+	for i, s := range tabs {
+		if i == m.tab {
+			parts = append(parts, tabActive.Render(s))
+		} else {
+			parts = append(parts, tabStyle.Render(s))
+		}
+	}
+	return strings.Join(parts, "")
+}
+
+func (m Model) renderBody(h int) string {
+	switch m.tab {
+	case tabDashboard:
+		return m.renderDashboard(h)
+	case tabTracks:
+		return m.renderTracks(h)
+	case tabPlayer:
+		return m.renderPlayerTab(h)
+	case tabLog:
+		return m.renderLog(h)
+	}
+	return ""
+}
+
+func (m Model) renderDashboard(h int) string {
+	// Split: top = status + sources, bottom = workers.
+	srcH := 2 + len(m.order)
+	if srcH > h-4 {
+		srcH = h - 4
+		if srcH < 1 {
+			srcH = 1
+		}
+	}
+	workerH := h - srcH
+	if workerH < 0 {
+		workerH = 0
+	}
+
+	var b strings.Builder
+
+	// Status line.
+	phase := m.eng.Phase()
+	pendingTotal := 0
+	for _, n := range m.pending {
+		pendingTotal += n
+	}
+	b.WriteString(fmt.Sprintf("Phase: %s  Pending: %d  ", phase, pendingTotal))
+	if m.eng.IsDiscovering() {
+		b.WriteString("discovering…  ")
+	}
+	b.WriteString(fmt.Sprintf("%.1f MB/s", m.mbps))
+	b.WriteString("\n\n")
+
+	// Sources table.
+	b.WriteString(m.renderSourcesTable())
+	b.WriteString("\n")
+
+	// Workers panel.
+	if workerH > 1 {
+		b.WriteString(m.renderWorkers(workerH))
+	}
+	return b.String()
+}
+
+func (m Model) renderSourcesTable() string {
 	var b strings.Builder
 	b.WriteString(headerStyle.Render(fmt.Sprintf(
 		"%-16s %5s %5s %5s %5s %5s %5s %7s %10s",
@@ -126,47 +196,65 @@ func (m Model) renderSources() string {
 	return boxStyle.Width(m.width - 2).Render(strings.TrimRight(b.String(), "\n"))
 }
 
-func (m Model) renderTotal() string {
-	var disc, done, fail int
-	for _, src := range m.order {
-		a := m.aggregate(src)
-		disc += a.disc
-		done += a.done
-		fail += a.fail
-	}
-	ratio := 0.0
-	if disc > 0 {
-		ratio = float64(done) / float64(disc)
-	}
-	eta := "--:--"
-	if rate := m.totalRate(); rate > 0 {
-		if remaining := disc - done - fail; remaining > 0 {
-			eta = fmtDuration(float64(remaining) / rate)
-		} else {
-			eta = "00:00"
+func (m Model) renderWorkers(h int) string {
+	ws := m.workers
+	var b strings.Builder
+	b.WriteString(headerStyle.Render("WORKERS"))
+	b.WriteString("\n")
+	shown := 0
+	for _, w := range ws {
+		if shown >= h-2 {
+			b.WriteString(dimStyle.Render(fmt.Sprintf("  ... %d more", len(ws)-shown)))
+			break
 		}
+		statusGlyph := "▶"
+		style := okStyle
+		if w.Status == "backoff" {
+			statusGlyph = "⟳"
+			style = failStyle
+		} else if w.Status == "idle" {
+			statusGlyph = "○"
+			style = dimStyle
+		}
+		line := fmt.Sprintf("  %s %s/%s  %s/%s",
+			statusGlyph, w.Stage, w.Source, w.Worker, truncate(w.Title, 30))
+		if w.Status == "backoff" {
+			line += "  " + w.Backoff
+		} else if w.Bytes > 0 {
+			line += fmt.Sprintf("  %s", humanSize(w.Bytes))
+		}
+		b.WriteString(style.Render(line))
+		b.WriteString("\n")
+		shown++
 	}
-	return fmt.Sprintf("TOTAL %d/%d  %s  ETA %s  %.1f MB/s",
-		done, disc, m.prog.ViewAs(ratio), eta, m.mbps)
+	if len(ws) == 0 {
+		b.WriteString(dimStyle.Render("  (no active workers)"))
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
-func (m Model) renderTracks() string {
-	title := "TRACKS"
-	if q := m.search.Value(); q != "" && !m.searchActive {
-		title += fmt.Sprintf("  (filter: %q)", q)
-	}
-	header := headerStyle.Render(title) + dimStyle.Render(fmt.Sprintf("  %d shown", len(m.tracks)))
-
-	searchLine := ""
-	if m.searchActive {
-		searchLine = m.search.View() + "\n"
+func (m Model) renderTracks(h int) string {
+	// Always-visible search bar.
+	searchLine := m.search.View()
+	bodyH := h - 3 // header + search + footer space
+	if bodyH < 1 {
+		bodyH = 1
 	}
 
-	rows := m.height - 16
-	if rows < 3 {
-		rows = 3
+	header := headerStyle.Render(fmt.Sprintf("%-4s %-16s %-30s %s", "ST", "SOURCE", "TITLE", "SIZE"))
+	q := m.search.Value()
+	info := fmt.Sprintf("%d shown", len(m.tracks))
+	if q != "" {
+		info = fmt.Sprintf("filter: %q  %d shown", q, len(m.tracks))
 	}
+	header += dimStyle.Render("  " + info)
+
 	start := 0
+	rows := bodyH - 1
+	if rows < 1 {
+		rows = 1
+	}
 	if m.sel >= rows {
 		start = m.sel - rows + 1
 	}
@@ -181,41 +269,120 @@ func (m Model) renderTracks() string {
 	}
 	for i := start; i < end; i++ {
 		t := m.tracks[i]
-		line := displayLine(t, m.nowPlaying)
+		line := trackRow(t, m.nowPlaying)
 		if i == m.sel {
-			lines = append(lines, selStyle.Render(padRight(line, m.width-6)))
+			lines = append(lines, selStyle.Render(padRight("> "+line, m.width-20)))
 		} else {
-			lines = append(lines, truncate(statusGlyph(t)+" "+line, m.width-6))
+			lines = append(lines, "  "+truncate(line, m.width-22))
 		}
 	}
 	body := strings.Join(lines, "\n")
-	return header + "\n" + searchLine + boxStyle.Width(m.width-2).Render(body)
+
+	return searchLine + "\n" + header + "\n" + boxStyle.Width(m.width-2).Render(body)
 }
 
-func (m Model) renderNowPlaying() string {
-	backend := m.play.Backend()
-	if backend == "" {
-		backend = "none"
+func trackRow(t *core.Track, nowID string) string {
+	now := " "
+	if t.ID == nowID {
+		now = "♪"
 	}
-	np := dimStyle.Render("—")
-	if m.nowPlaying != "" {
-		for _, t := range m.tracks {
-			if t.ID == m.nowPlaying {
-				np = playStyle.Render("▶ " + displayTitle(t))
-				break
-			}
-		}
+	st := t.Status
+	if len(st) > 4 {
+		st = st[:4]
 	}
-	return fmt.Sprintf("player[%s]: %s   %s", backend, np, dimStyle.Render(m.statusLine))
+	state := statusGlyph(t) + st
+	src := truncate(t.Source, 14)
+	name := displayTitle(t)
+	size := ""
+	if t.Status == core.StatusDone {
+		size = fmt.Sprintf("opus %s caf %s", human(t.OpusBytes), human(t.CafBytes))
+	}
+	return fmt.Sprintf("%s %-4s %-16s %-30s %s", now, state, src, truncate(name, 30), size)
 }
+
+func (m Model) renderPlayerTab(h int) string {
+	var b strings.Builder
+	b.WriteString(headerStyle.Render("PLAYER"))
+	b.WriteString("\n\n")
+
+	if m.nowPlaying != "" {
+		b.WriteString(playStyle.Render("▶ " + m.nowTitle))
+		b.WriteString("\n\n")
+
+		// Progress bar.
+		frac := 0.0
+		if m.durSec > 0 {
+			frac = m.posSec / m.durSec
+		}
+		b.WriteString(m.prog.ViewAs(frac))
+		b.WriteString("\n")
+
+		pos := fmtDuration(m.posSec)
+		dur := fmtDuration(m.durSec)
+		state := m.playState
+		if state == "" {
+			state = "playing"
+		}
+		b.WriteString(fmt.Sprintf("%s / %s  [%s]", pos, dur, state))
+		b.WriteString("\n")
+
+		if m.playerErr != "" {
+			b.WriteString(failStyle.Render("error: " + m.playerErr))
+			b.WriteString("\n")
+		}
+	} else {
+		b.WriteString(dimStyle.Render("No track playing. Select a 'done' track and press Enter."))
+		b.WriteString("\n")
+	}
+
+	// Controls help.
+	b.WriteString("\n")
+	b.WriteString(dimStyle.Render("[enter] play  [space] pause/resume  [←→] seek ±10s  [s] stop"))
+	b.WriteString("\n")
+
+	if len(m.tracks) > 0 && m.sel < len(m.tracks) {
+		t := m.tracks[m.sel]
+		b.WriteString("\n")
+		b.WriteString(fmt.Sprintf("Selected: %s [%s]", displayTitle(t), t.Status))
+	}
+
+	return b.String()
+}
+
+func (m Model) renderLog(h int) string {
+	lines := m.logLines
+	bodyH := h - 1
+	if bodyH < 1 {
+		bodyH = 1
+	}
+
+	start := 0
+	if len(lines) > bodyH {
+		start = len(lines) - bodyH
+	}
+
+	var b strings.Builder
+	b.WriteString(headerStyle.Render("LOG"))
+	b.WriteString("\n")
+	for i := start; i < len(lines); i++ {
+		b.WriteString(dimStyle.Render(lines[i]))
+		b.WriteString("\n")
+	}
+	if len(lines) == 0 {
+		b.WriteString(dimStyle.Render("(no activity yet)"))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// --- reused render helpers ---
 
 func (m Model) renderFooter() string {
+	pools := fmt.Sprintf("pool:%s [d/c/k/x]+/-", poolStages[m.focusPool])
 	return footerStyle.Render(fmt.Sprintf(
-		"[s]tart [p]ause  pool:%s [d/c/k/x]+/-  [↑↓]nav [enter]play [space]stop  [/]search [r]efresh [R]etry [q]uit",
-		poolStages[m.focusPool]))
+		"[s]start/stop  [r]ediscover  [R]etry  [V]revive  %s  [1-4]tabs  [/]search  [↑↓]nav  [enter]play  [q]uit",
+		pools))
 }
-
-// --- helpers ---
 
 func (m Model) etaFor(src string, a srcAgg) string {
 	r := m.rates[src]
@@ -267,25 +434,9 @@ func displayTitle(t *core.Track) string {
 		name = t.ID
 	}
 	if t.Composer != "" {
-		return fmt.Sprintf("%s — %s", t.Composer, name)
+		return t.Composer + " — " + truncate(name, 40)
 	}
-	return fmt.Sprintf("[%s] %s", t.Source, name)
-}
-
-func displayLine(t *core.Track, nowID string) string {
-	now := ""
-	if t.ID == nowID {
-		now = "♪ "
-	}
-	st := t.Status
-	if len(st) > 4 {
-		st = st[:4]
-	}
-	s := fmt.Sprintf("%s%-4s %s", now, st, displayTitle(t))
-	if t.Status == core.StatusDone {
-		s += fmt.Sprintf("  [opus %s caf %s]", human(t.OpusBytes), human(t.CafBytes))
-	}
-	return s
+	return "[" + t.Source + "] " + truncate(name, 40)
 }
 
 func fmtDuration(sec float64) string {
@@ -343,4 +494,17 @@ func lineJustify(left, right string, w int) string {
 		gap = 1
 	}
 	return left + strings.Repeat(" ", gap) + right
+}
+
+func humanSize(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%dB", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f%cB", float64(b)/float64(div), "KMGT"[exp])
 }

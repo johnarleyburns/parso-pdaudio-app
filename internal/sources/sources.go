@@ -34,8 +34,8 @@ var manifest = map[string]spec{
 		note: "CC0; Ogg Vorbis derivatives preferred",
 	},
 	"beethoven_pitman": {
-		provider: "commons", commonsQ: `"Beethoven" "Pitman"`,
-		note: "Paul Pitman 32 sonatas; Commons-only Ogg",
+		provider: "commons", commonsQ: `Beethoven Sonata Musopen`,
+		note: "Paul Pitman 32 sonatas; cross-source Musopen set via Commons",
 	},
 	"marine":     {provider: "commons", commonsQ: `"United States Marine Band"`, note: "PD-USGov mostly"},
 	"army":       {provider: "commons", commonsQ: `"United States Army Band"`, note: "PD-USGov mostly"},
