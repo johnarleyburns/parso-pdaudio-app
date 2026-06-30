@@ -50,22 +50,38 @@ func (p *Player) Events() <-chan Event { return p.events }
 func (p *Player) PreferredPath(dir, opusRel, cafRel string) string {
 	opus := filepath.Join(dir, opusRel)
 	caf := filepath.Join(dir, cafRel)
-	if p.backend == "beep" || p.backend == "afplay" {
-		if cafRel != "" {
-			if _, err := os.Stat(caf); err == nil {
-				return caf
-			}
-		}
+	if p.backend == "beep" {
+		// ffmpeg can decode opus natively; prefer it over opus-in-caf.
 		if opusRel != "" {
 			if _, err := os.Stat(opus); err == nil {
 				return opus
 			}
 		}
 		if cafRel != "" {
+			if _, err := os.Stat(caf); err == nil {
+				return caf
+			}
+		}
+		if opusRel != "" {
+			return opus
+		}
+		return caf
+	}
+	if p.backend == "afplay" {
+		if cafRel != "" {
+			if _, err := os.Stat(caf); err == nil {
+				return caf
+			}
+		}
+		if opusRel != "" {
+			return opus
+		}
+		if cafRel != "" {
 			return caf
 		}
 		return opus
 	}
+	// ffplay
 	if opusRel != "" {
 		return opus
 	}

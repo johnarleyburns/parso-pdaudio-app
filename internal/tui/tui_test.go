@@ -255,8 +255,11 @@ func TestPlaySelectedNoPanic(t *testing.T) {
 	}
 
 	// Done track with backend — tests the player nil deref path.
-	// If backend is unavailable on this machine, playSelected returns early.
+	// Skip beep backend under -race (oto/v3 internal race on darwin).
 	m = newTestModel(t)
+	if m.play != nil && m.play.Backend() == "beep" && raceDetector {
+		t.Skip("skipping beep under -race (oto/v3 internal race on darwin)")
+	}
 	doneT := &core.Track{ID: "OK", Source: "test", Status: core.StatusDone,
 		Title: "Safe", OpusPath: "safe.opus", CafPath: "safe.caf"}
 	m.tracks = []*core.Track{doneT}

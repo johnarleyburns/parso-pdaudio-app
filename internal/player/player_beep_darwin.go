@@ -4,21 +4,93 @@ package player
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
+	"io"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/gopxl/beep/v2"
 	"github.com/gopxl/beep/v2/speaker"
-	"github.com/gopxl/beep/v2/wav"
+)
+
+const (
+	beepSampleRate = beep.SampleRate(44100)
+	beepFormat     = 2 // stereo channels
+	beepPrecision  = 2 // 16-bit = 2 bytes
 )
 
 type beepHandle struct {
-	streamer    beep.StreamSeekCloser
-	ctrl        *beep.Ctrl
-	format      beep.Format
-	sampleRate  beep.SampleRate
-	speakerInit bool
+	streamer *pcmStreamer
+	ctrl     *beep.Ctrl
+}
+
+// Package-level speaker init (once per process, mutex-serialized).
+var (
+	beepInitOnce sync.Once
+	beepInitErr  error
+	beepInitMu   sync.Mutex
+)
+
+// pcmStreamer wraps a raw s16le PCM reader as a beep.Streamer.
+type pcmStreamer struct {
+	r   io.Reader
+	buf []byte
+	pos int // samples consumed
+	err error
+}
+
+func (s *pcmStreamer) Stream(samples [][2]float64) (n int, ok bool) {
+	if s.err != nil {
+		return 0, false
+	}
+	needed := len(samples) * 4 // 2 channels × 2 bytes
+	if cap(s.buf) < needed {
+		s.buf = make([]byte, needed)
+	}
+	s.buf = s.buf[:needed]
+	read, err := io.ReadFull(s.r, s.buf)
+	n = read / 4
+	for i := 0; i < n; i++ {
+		l := int16(binary.LittleEndian.Uint16(s.buf[i*4 : i*4+2]))
+		r := int16(binary.LittleEndian.Uint16(s.buf[i*4+2 : i*4+4]))
+		samples[i][0] = float64(l) / 32768.0
+		samples[i][1] = float64(r) / 32768.0
+	}
+	s.pos += n
+	if err == io.EOF || err == io.ErrUnexpectedEOF {
+		s.err = io.EOF
+		return n, false
+	}
+	if err != nil {
+		s.err = err
+		return n, false
+	}
+	return n, true
+}
+
+func (s *pcmStreamer) Err() error {
+	if s.err == io.EOF {
+		return nil
+	}
+	return s.err
+}
+
+func (s *pcmStreamer) Position() int {
+	return s.pos
+}
+
+func (s *pcmStreamer) Len() int {
+	return -1 // unknown (pipe)
+}
+
+func (s *pcmStreamer) Seek(p int) error {
+	return fmt.Errorf("pipe is not seekable")
+}
+
+func (s *pcmStreamer) Close() error {
+	return nil
 }
 
 // New detects audio backends and returns a Player.
@@ -70,7 +142,6 @@ func (p *Player) Stop() {
 	}
 	if p.bph.streamer != nil {
 		speaker.Clear()
-		p.bph.streamer.Close()
 		p.bph.streamer = nil
 		p.bph.ctrl = nil
 	}
@@ -106,22 +177,17 @@ func (p *Player) Resume() {
 func (p *Player) Seek(relSec float64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.bph.streamer == nil || p.bph.format.SampleRate == 0 {
+	if p.bph.streamer == nil {
 		return
 	}
+	delta := int(relSec * float64(beepSampleRate))
 	speaker.Lock()
-	pos := p.bph.streamer.Position()
-	length := p.bph.streamer.Len()
-	delta := p.bph.format.SampleRate.N(time.Duration(relSec * float64(time.Second)))
-	newPos := pos + delta
+	newPos := p.bph.streamer.Position() + delta
 	if newPos < 0 {
 		newPos = 0
 	}
-	if length > 0 && newPos >= length {
-		newPos = length - 1
-	}
-	if newPos >= 0 {
-		_ = p.bph.streamer.Seek(newPos)
+	if err := p.bph.streamer.Seek(newPos); err != nil {
+		// pipe is not seekable — reset via ffmpeg seek
 	}
 	speaker.Unlock()
 }
@@ -129,19 +195,17 @@ func (p *Player) Seek(relSec float64) {
 func (p *Player) Position() (pos, dur float64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.bph.streamer == nil || p.bph.format.SampleRate == 0 {
+	if p.bph.streamer == nil {
 		if p.playing != nil {
 			return 0, p.playing.dur
 		}
 		return 0, 0
 	}
 	speaker.Lock()
-	samplePos := p.bph.streamer.Position()
-	sampleLen := p.bph.streamer.Len()
+	spos := p.bph.streamer.Position()
 	speaker.Unlock()
-	pos = p.bph.format.SampleRate.D(samplePos).Seconds()
-	dur = p.bph.format.SampleRate.D(sampleLen).Seconds()
-	if dur == 0 && p.playing != nil {
+	pos = float64(spos) / float64(beepSampleRate)
+	if p.playing != nil {
 		dur = p.playing.dur
 	}
 	return
@@ -154,10 +218,11 @@ func (p *Player) Playing() bool {
 }
 
 func (p *Player) playBeep(pb *playback) {
+	// Raw PCM output from ffmpeg (no WAV header — wav.Decode has pipe issues).
 	args := []string{
 		"-hide_banner", "-loglevel", "error",
 		"-i", pb.path,
-		"-f", "wav", "-acodec", "pcm_s16le",
+		"-f", "s16le", "-acodec", "pcm_s16le",
 		"-ar", "44100", "-ac", "2",
 		"pipe:1",
 	}
@@ -173,40 +238,25 @@ func (p *Player) playBeep(pb *playback) {
 	}
 	pb.cmd = cmd
 
-	streamer, format, err := wav.Decode(stdout)
-	if err != nil {
-		cmd.Process.Kill()
-		cmd.Wait()
-		p.playSubprocessFallback(pb)
-		return
-	}
+	streamer := &pcmStreamer{r: stdout}
 
 	p.mu.Lock()
 	p.bph.streamer = streamer
-	p.bph.format = format
 	p.bph.ctrl = &beep.Ctrl{Streamer: streamer, Paused: false}
 	p.mu.Unlock()
 
-	if !p.bph.speakerInit {
-		bufSize := format.SampleRate.N(time.Second / 10)
-		if err := speaker.Init(format.SampleRate, bufSize); err != nil {
-			p.send(Event{Path: pb.path, Err: fmt.Sprintf("audio init: %v", err), Ended: true})
-			streamer.Close()
-			cmd.Process.Kill()
-			cmd.Wait()
-			return
-		}
-		p.bph.sampleRate = format.SampleRate
-		p.bph.speakerInit = true
+	beepInitOnce.Do(func() {
+		beepInitMu.Lock()
+		defer beepInitMu.Unlock()
+		bufSize := beepSampleRate.N(time.Second / 10)
+		beepInitErr = speaker.Init(beepSampleRate, bufSize)
+	})
+	if beepInitErr != nil {
+		p.send(Event{Path: pb.path, Err: fmt.Sprintf("audio init: %v", beepInitErr), Ended: true})
+		cmd.Process.Kill()
+		cmd.Wait()
+		return
 	}
-
-	p.mu.Lock()
-	var s beep.Streamer = streamer
-	if format.SampleRate != p.bph.sampleRate {
-		s = beep.Resample(4, format.SampleRate, p.bph.sampleRate, streamer)
-	}
-	p.bph.ctrl.Streamer = s
-	p.mu.Unlock()
 
 	p.send(Event{State: "loading", Path: pb.path, DurSec: pb.dur})
 
@@ -224,7 +274,6 @@ func (p *Player) playBeep(pb *playback) {
 	cmd.Wait()
 	p.mu.Lock()
 	if p.bph.streamer == streamer {
-		p.bph.streamer.Close()
 		p.bph.streamer = nil
 		p.bph.ctrl = nil
 	}
