@@ -18,10 +18,12 @@ type Entry struct {
 var Order = []string{
 	"chopin", "bach_wtc1", "goldberg", "beethoven_pitman", "marine", "army",
 	"navy", "airforce", "coastguard", "spaceforce",
+	"commons_classical",
 }
 
 type spec struct {
 	provider   string
+	mode       string // for commons: "" = search, "classical_categories" = category traversal
 	iaID       string
 	iaComposer string
 	commonsQ   string
@@ -45,12 +47,13 @@ var manifest = map[string]spec{
 		provider: "commons", commonsQ: `Beethoven Sonata Musopen`,
 		note: "Paul Pitman 32 sonatas; cross-source Musopen set via Commons",
 	},
-	"marine":     {provider: "commons", commonsQ: `"United States Marine Band"`, note: "PD-USGov mostly"},
-	"army":       {provider: "commons", commonsQ: `"United States Army Band"`, note: "PD-USGov mostly"},
-	"navy":       {provider: "commons", commonsQ: `"United States Navy Band"`, note: "PD-USGov mostly"},
-	"airforce":   {provider: "commons", commonsQ: `"United States Air Force Band"`, note: "PD-USGov mostly"},
-	"coastguard": {provider: "commons", commonsQ: `"United States Coast Guard Band"`, note: "PD-USGov mostly"},
-	"spaceforce": {provider: "commons", commonsQ: `"United States Space Force Band"`, note: "~empty; founded 2020"},
+	"marine":            {provider: "commons", commonsQ: `"United States Marine Band"`, note: "PD-USGov mostly"},
+	"army":              {provider: "commons", commonsQ: `"United States Army Band"`, note: "PD-USGov mostly"},
+	"navy":              {provider: "commons", commonsQ: `"United States Navy Band"`, note: "PD-USGov mostly"},
+	"airforce":          {provider: "commons", commonsQ: `"United States Air Force Band"`, note: "PD-USGov mostly"},
+	"coastguard":        {provider: "commons", commonsQ: `"United States Coast Guard Band"`, note: "PD-USGov mostly"},
+	"spaceforce":        {provider: "commons", commonsQ: `"United States Space Force Band"`, note: "~empty; founded 2020"},
+	"commons_classical": {provider: "commons", mode: "classical_categories", note: "~129 composers via category traversal; CC0/PD filtered"},
 }
 
 // Keys returns all known source keys in canonical order.
@@ -71,8 +74,18 @@ func Resolve(requested []string) ([]string, error) {
 	return out, nil
 }
 
+// BuildOpts carries optional configuration needed by specific provider modes.
+type BuildOpts struct {
+	AllowAttribution bool
+	AllowFlac        bool
+	Prefer           []string
+}
+
 // Build constructs Provider instances for the given source keys.
-func Build(keys []string, client *provider.Client) ([]provider.Provider, error) {
+func Build(keys []string, client *provider.Client, opts *BuildOpts) ([]provider.Provider, error) {
+	if opts == nil {
+		opts = &BuildOpts{}
+	}
 	var out []provider.Provider
 	for _, k := range keys {
 		s, ok := manifest[k]
@@ -88,12 +101,51 @@ func Build(keys []string, client *provider.Client) ([]provider.Provider, error) 
 				Client:         client,
 			})
 		case "commons":
-			out = append(out, &provider.CommonsProvider{
-				SourceKey: k,
-				Query:     s.commonsQ,
-				PageSize:  50,
-				Client:    client,
-			})
+			if s.mode == "classical_categories" {
+				policy := "strict"
+				if opts.AllowAttribution {
+					policy = "attribution"
+				}
+				pref := opts.Prefer
+				if opts.AllowFlac {
+					hasFlac := false
+					for _, p := range pref {
+						if p == "flac" {
+							hasFlac = true
+							break
+						}
+					}
+					if !hasFlac {
+						// insert flac after ogg
+						pref = make([]string, 0, len(opts.Prefer)+1)
+						for _, p := range opts.Prefer {
+							pref = append(pref, p)
+							if p == "ogg" {
+								pref = append(pref, "flac")
+							}
+						}
+					}
+				}
+				out = append(out, &provider.ClassicalCategoriesProvider{
+					SourceKey:          k,
+					RootCategory:       "Category:Audio files of classical music by composer",
+					MaxDepth:           3,
+					SkipSubcatPatterns: []string{"MIDI files", "Synthesized", "Sheet music", "Scores", "metronome"},
+					FormatPreference:   pref,
+					MinBytes:           250000,
+					MinDurationSec:     30,
+					LicensePolicy:      policy,
+					ComposerAllowlist:  nil,
+					Client:             client,
+				})
+			} else {
+				out = append(out, &provider.CommonsProvider{
+					SourceKey: k,
+					Query:     s.commonsQ,
+					PageSize:  50,
+					Client:    client,
+				})
+			}
 		default:
 			return nil, fmt.Errorf("source %q: bad provider %q", k, s.provider)
 		}

@@ -229,6 +229,13 @@ func (e *Engine) stepConvert(ctx context.Context, wid string) bool {
 	if err != nil {
 		return e.failTrack(ctx, t, StageConvert, err)
 	}
+	// B.3.2 Fragment floor — authoritative convert gate
+	if e.cfg.MinDurationSec > 0 && dur < e.cfg.MinDurationSec {
+		_ = e.store.MarkSkipped(ctx, t.ID, fmt.Sprintf("fragment: duration %.1fs < %.0fs", dur, e.cfg.MinDurationSec))
+		e.emit(core.ProgressMsg{Source: t.Source, Stage: StageConvert, TrackID: t.ID, Skipped: true})
+		e.Logf("SKIP %s %s: fragment (%.1fs < %.0fs)", t.Source, displayTitleForWorker(t), dur, e.cfg.MinDurationSec)
+		return true
+	}
 	out := e.opusPath(t.ID)
 	if err := e.tools.ToOpus(ctx, src, out, codec, e.cfg.OpusBitrate); err != nil {
 		return e.failTrack(ctx, t, StageConvert, err)

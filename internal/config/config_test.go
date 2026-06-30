@@ -16,6 +16,15 @@ func TestParseDefaults(t *testing.T) {
 	if len(c.Sources) != 1 || c.Sources[0] != "all" {
 		t.Fatalf("bad sources: %v", c.Sources)
 	}
+	if !c.CommonsAllowFlac {
+		t.Fatal("CommonsAllowFlac should default to true")
+	}
+	if c.CommonsAllowAttribution {
+		t.Fatal("CommonsAllowAttribution should default to false")
+	}
+	if c.MinDurationSec != 30 {
+		t.Fatalf("MinDurationSec should default to 30, got %f", c.MinDurationSec)
+	}
 }
 
 func TestParseOverridesAndValidation(t *testing.T) {
@@ -35,6 +44,33 @@ func TestParseOverridesAndValidation(t *testing.T) {
 	}
 	if _, err := Parse([]string{"--opus-bitrate", "9000"}); err == nil {
 		t.Fatal("expected invalid bitrate error")
+	}
+}
+
+func TestParseCommonsFlags(t *testing.T) {
+	// commons-allow-attribution
+	c, err := Parse([]string{"--commons-allow-attribution"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.CommonsAllowAttribution {
+		t.Fatal("CommonsAllowAttribution should be true")
+	}
+	// commons-allow-flac=false
+	c, err = Parse([]string{"--commons-allow-flac=false"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.CommonsAllowFlac {
+		t.Fatal("CommonsAllowFlac should be false")
+	}
+	// min-duration
+	c, err = Parse([]string{"--min-duration", "60.5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.MinDurationSec != 60.5 {
+		t.Fatalf("MinDurationSec = %f, want 60.5", c.MinDurationSec)
 	}
 }
 
