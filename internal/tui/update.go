@@ -241,15 +241,21 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) playSelected() tea.Cmd {
+	if m == nil {
+		return nil
+	}
 	if m.sel < 0 || m.sel >= len(m.tracks) {
 		return nil
 	}
 	t := m.tracks[m.sel]
+	if t == nil {
+		return nil
+	}
 	if t.Status != core.StatusDone || t.OpusPath == "" {
 		m.statusLine = "not playable yet (status " + t.Status + ")"
 		return nil
 	}
-	if !m.play.Available() {
+	if m.play == nil || !m.play.Available() {
 		m.statusLine = "no audio backend (install afplay/ffplay)"
 		return nil
 	}

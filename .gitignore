@@ -1,6 +1,7 @@
 # Built binary
 /parso-pdaudio
 parso-pdaudio.exe
+/bin/
 
 # Library output (DB + media artifacts)
 /library/
