@@ -44,3 +44,14 @@ func TestPlayingStateDefaults(t *testing.T) {
 		t.Fatal("new player current should be empty")
 	}
 }
+
+func TestPlayNoPanicOnFirstCall(t *testing.T) {
+	p := New()
+	if !p.Available() {
+		t.Skip("no audio backend available")
+	}
+	// Must not panic when p.playing is nil (first Play call).
+	p.Play("/dev/null")
+	// Clean up.
+	p.Stop()
+}

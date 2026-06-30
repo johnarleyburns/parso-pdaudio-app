@@ -76,7 +76,7 @@ func TestViewRendersAndNavigates(t *testing.T) {
 	}
 
 	view := m.View()
-	for _, want := range []string{"parso-pdaudio", "Ballade", "TITLE", "Tracks"} {
+	for _, want := range []string{"parso-pdaudio", "Ballade", "TITLE", "Tracks", "COMPOSER", "Chopin"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}

@@ -242,7 +242,7 @@ func (m Model) renderTracks(h int) string {
 		bodyH = 1
 	}
 
-	header := "  " + headerStyle.Render(fmt.Sprintf("%-4s %-16s %-30s %s", "ST", "SOURCE", "TITLE", "SIZE"))
+	header := " " + headerStyle.Render(fmt.Sprintf("%-7s %-14s %-16s %-40s %s", "ST", "SOURCE", "COMPOSER", "TITLE", "SIZE"))
 	q := m.search.Value()
 	info := fmt.Sprintf("%d shown", len(m.tracks))
 	if q != "" {
@@ -264,8 +264,8 @@ func (m Model) renderTracks(h int) string {
 	}
 
 	contentW := m.width - 6 // box outer(m.width-2) - border(2) - padding(2)
-	if contentW < 20 {
-		contentW = 20
+	if contentW < 40 {
+		contentW = 40
 	}
 	var lines []string
 	if len(m.tracks) == 0 {
@@ -275,9 +275,9 @@ func (m Model) renderTracks(h int) string {
 		t := m.tracks[i]
 		line := trackRow(t, m.nowPlaying)
 		if i == m.sel {
-			lines = append(lines, selStyle.Render(padRight("> "+line, contentW)))
+			lines = append(lines, selStyle.Render(padRight(">"+line, contentW)))
 		} else {
-			lines = append(lines, "  "+line)
+			lines = append(lines, " "+line)
 		}
 	}
 	lines = append([]string{header, ""}, lines...)
@@ -309,13 +309,26 @@ func trackRow(t *core.Track, nowID string) string {
 		glyph = "◐"
 	}
 	state := glyph + st
-	src := truncate(t.Source, 14)
-	name := displayTitle(t)
+	src := truncate(t.Source, 12)
+	cmp := t.Composer
+	if cmp == "" {
+		cmp = "—"
+	}
+	title := t.Title
+	if title == "" {
+		title = t.Work
+	}
+	if title == "" {
+		title = t.SourceItem
+	}
+	if title == "" {
+		title = t.ID
+	}
 	size := ""
 	if t.Status == core.StatusDone {
 		size = fmt.Sprintf("opus %s caf %s", human(t.OpusBytes), human(t.CafBytes))
 	}
-	return fmt.Sprintf("%s %-4s %-16s %-30s %s", now, state, src, truncate(name, 30), size)
+	return fmt.Sprintf("%s %-4s %-14s %-16s %-40s %s", now, state, src, truncate(cmp, 14), truncate(title, 38), size)
 }
 
 func (m Model) renderPlayerTab(h int) string {

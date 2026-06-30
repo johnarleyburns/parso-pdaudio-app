@@ -111,14 +111,12 @@ func (p *Player) Play(path string) {
 		return
 	}
 	p.mu.Lock()
+	gen := 1
 	if p.playing != nil {
 		p.playing.cancel()
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	gen := p.playing.gen + 1
-	if p.playing != nil {
 		gen = p.playing.gen + 1
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	pb := &playback{ctx: ctx, cancel: cancel, path: path, gen: gen, dur: probeDuration(path)}
 	p.playing = pb
 	p.mu.Unlock()

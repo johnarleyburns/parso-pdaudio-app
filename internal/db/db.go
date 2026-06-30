@@ -387,7 +387,7 @@ func (d *DB) ListPlayable(ctx context.Context, limit int) ([]*core.Track, error)
 
 // ListAll returns up to limit tracks ordered by source/status (TUI list).
 func (d *DB) ListAll(ctx context.Context, limit int) ([]*core.Track, error) {
-	q := `SELECT ` + trackCols + ` FROM tracks ORDER BY source, created_at LIMIT ?`
+	q := `SELECT ` + trackCols + ` FROM tracks ORDER BY title COLLATE NOCASE, created_at LIMIT ?`
 	return d.queryTracks(ctx, q, limit)
 }
 
