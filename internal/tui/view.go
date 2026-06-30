@@ -438,7 +438,6 @@ func (m Model) totalRate() float64 {
 	return sum
 }
 
-
 func displayTitle(t *core.Track) string {
 	name := t.Title
 	if name == "" {
