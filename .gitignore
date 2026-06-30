@@ -1,0 +1,16 @@
+# Built binary
+/parso-pdaudio
+parso-pdaudio.exe
+
+# Library output (DB + media artifacts)
+/library/
+/demolibrary/
+*.opus
+*.caf
+*.src.*
+*.db
+*.db-wal
+*.db-shm
+
+# OS / editor
+.DS_Store
