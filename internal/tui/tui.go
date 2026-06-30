@@ -21,12 +21,13 @@ var poolStages = []string{
 	pipeline.StagePackage, pipeline.StageCleaner,
 }
 
-const tabCount = 4
+const tabCount = 5
 const (
 	tabDashboard = iota
 	tabTracks
 	tabPlayer
 	tabLog
+	tabBrowse
 )
 
 // Messages.
@@ -39,6 +40,10 @@ type (
 	workerMsg   struct{ workers []pipeline.WorkerStatus }
 	pendingMsg  struct{ pending map[string]int }
 	logsMsg     struct{ lines []string }
+
+	browseSourcesMsg   struct{ nodes []db.BrowseEntry }
+	browseComposersMsg struct{ nodes []db.BrowseEntry }
+	browseTitlesMsg    struct{ nodes []db.BrowseEntry }
 )
 
 type srcRate struct {
@@ -79,6 +84,15 @@ type Model struct {
 	sel          int
 	selID        string
 	tickCount    int
+
+	// browse pane
+	browseLevel           int // 0=source, 1=composer, 2=title
+	browseSel             int
+	browseSelSource       string
+	browseSelComposer     string
+	browseSources         []db.BrowseEntry
+	browseComposers       []db.BrowseEntry
+	browseTitles          []db.BrowseEntry
 
 	// controls
 	focusPool int
@@ -198,5 +212,41 @@ func (m Model) refreshTracksCmd(query string) tea.Cmd {
 			return tracksMsg{}
 		}
 		return tracksMsg{tracks: ts}
+	}
+}
+
+func (m Model) refreshBrowseSourcesCmd() tea.Cmd {
+	ctx := m.ctx
+	store := m.store
+	return func() tea.Msg {
+		nodes, err := store.BrowseSources(ctx)
+		if err != nil {
+			return browseSourcesMsg{}
+		}
+		return browseSourcesMsg{nodes: nodes}
+	}
+}
+
+func (m Model) refreshBrowseComposersCmd(source string) tea.Cmd {
+	ctx := m.ctx
+	store := m.store
+	return func() tea.Msg {
+		nodes, err := store.BrowseComposers(ctx, source)
+		if err != nil {
+			return browseComposersMsg{}
+		}
+		return browseComposersMsg{nodes: nodes}
+	}
+}
+
+func (m Model) refreshBrowseTitlesCmd(source, composer string) tea.Cmd {
+	ctx := m.ctx
+	store := m.store
+	return func() tea.Msg {
+		nodes, err := store.BrowseTitles(ctx, source, composer)
+		if err != nil {
+			return browseTitlesMsg{}
+		}
+		return browseTitlesMsg{nodes: nodes}
 	}
 }

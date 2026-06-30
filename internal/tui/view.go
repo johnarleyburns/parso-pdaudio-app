@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/johnarleyburns/parso-pdaudio/internal/core"
+	"github.com/johnarleyburns/parso-pdaudio/internal/db"
 	"github.com/johnarleyburns/parso-pdaudio/internal/pipeline"
 )
 
@@ -107,7 +108,7 @@ func (m Model) renderHeader() string {
 }
 
 func (m Model) renderTabs() string {
-	tabs := []string{"1 Dashboard", "2 Tracks", "3 Player", "4 Log"}
+	tabs := []string{"Dashboard", "Tracks", "Player", "Browse", "Log"}
 	var parts []string
 	for i, s := range tabs {
 		if i == m.tab {
@@ -116,7 +117,36 @@ func (m Model) renderTabs() string {
 			parts = append(parts, tabStyle.Render(s))
 		}
 	}
-	return strings.Join(parts, "")
+	n := len(parts)
+	if n <= 1 {
+		return parts[0]
+	}
+	totalLabelW := 0
+	for _, p := range parts {
+		totalLabelW += lipgloss.Width(p)
+	}
+	gapCount := n - 1
+	extra := m.width - totalLabelW
+	if extra < 0 {
+		extra = 0
+	}
+	spacing := extra / gapCount
+	if spacing < 1 {
+		spacing = 1
+	}
+	var b strings.Builder
+	for i, p := range parts {
+		if i > 0 {
+			b.WriteString(strings.Repeat(" ", spacing))
+		}
+		b.WriteString(p)
+	}
+	// Fill remainder of the row so the active tab background extends.
+	remainder := m.width - lipgloss.Width(b.String())
+	if remainder > 0 {
+		b.WriteString(strings.Repeat(" ", remainder))
+	}
+	return b.String()
 }
 
 func (m Model) renderBody(h int) string {
@@ -129,6 +159,8 @@ func (m Model) renderBody(h int) string {
 		return m.renderPlayerTab(h)
 	case tabLog:
 		return m.renderLog(h)
+	case tabBrowse:
+		return m.renderBrowse(h)
 	}
 	return ""
 }
@@ -406,12 +438,98 @@ func (m Model) renderLog(h int) string {
 	return b.String()
 }
 
+func (m Model) renderBrowse(h int) string {
+	var b strings.Builder
+
+	// Breadcrumb.
+	var crumbs []string
+	crumbs = append(crumbs, "All sources")
+	if m.browseLevel >= 1 && m.browseSelSource != "" {
+		crumbs = append(crumbs, m.browseSelSource)
+	}
+	if m.browseLevel >= 2 && m.browseSelComposer != "" {
+		crumbs = append(crumbs, m.browseSelComposer)
+		if m.browseSelComposer == "" {
+			crumbs[len(crumbs)-1] = "—"
+		}
+	}
+	crumbStr := strings.Join(crumbs, " > ")
+	b.WriteString(dimStyle.Render(crumbStr))
+	b.WriteString("\n\n")
+
+	// Determine which nodes to show and header text.
+	var nodes []db.BrowseEntry
+	var headerLabel string
+	switch m.browseLevel {
+	case 0:
+		nodes = m.browseSources
+		headerLabel = "SOURCES"
+	case 1:
+		nodes = m.browseComposers
+		headerLabel = "COMPOSERS in " + m.browseSelSource
+	case 2:
+		nodes = m.browseTitles
+		headerLabel = "TITLES"
+	}
+
+	total := 0
+	for _, n := range nodes {
+		total += n.Count
+	}
+
+	header := headerStyle.Render(fmt.Sprintf("%-40s %s", headerLabel, fmt.Sprintf("%d nodes, %d tracks", len(nodes), total)))
+	b.WriteString(header)
+	b.WriteString("\n")
+
+	bodyH := h - 4
+	if bodyH < 1 {
+		bodyH = 1
+	}
+	rows := bodyH
+	if rows < 1 {
+		rows = 1
+	}
+
+	start := 0
+	if m.browseSel >= rows {
+		start = m.browseSel - rows + 1
+	}
+	end := start + rows
+	if end > len(nodes) {
+		end = len(nodes)
+	}
+
+	hasSelection := m.browseSel >= 0 && m.browseSel < len(nodes)
+	if len(nodes) == 0 {
+		b.WriteString(dimStyle.Render("(no tracks yet)"))
+	} else {
+		for i := start; i < end; i++ {
+			n := nodes[i]
+			indent := "  "
+			glyph := "  "
+			if hasSelection && i == m.browseSel {
+				glyph = "▶ "
+			}
+			line := fmt.Sprintf("%s%-50s (%d)", glyph, n.Name, n.Count)
+			if hasSelection && i == m.browseSel {
+				line = selStyle.Render(padRight(line, m.width-2))
+			}
+			b.WriteString(indent)
+			b.WriteString(line)
+			if i < end-1 {
+				b.WriteString("\n")
+			}
+		}
+	}
+	return b.String()
+}
+
 // --- reused render helpers ---
 
 func (m Model) renderFooter() string {
 	pools := fmt.Sprintf("pool:%s [d/c/k/x]+/-", poolStages[m.focusPool])
 	return footerStyle.Render(fmt.Sprintf(
-		"[s]start/stop  [r]ediscover  [R]etry  [V]revive  %s  [1-4]tabs  [/]search  [↑↓]nav  [enter]play  [q]uit",
+		"[s]start/stop  [r]ediscover  [R]etry  [V]revive  %s  [1-5]tabs  [/]search  [↑↓]nav  [enter]play  [q]uit",
 		pools))
 }
 

@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/johnarleyburns/parso-pdaudio/internal/core"
+	"github.com/johnarleyburns/parso-pdaudio/internal/db"
 	"github.com/johnarleyburns/parso-pdaudio/internal/pipeline"
 )
 
@@ -62,6 +63,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.refreshTracksCmd(m.search.Value())
 
+	case browseSourcesMsg:
+		m.browseSources = msg.nodes
+		if m.browseSel >= len(msg.nodes) {
+			m.browseSel = max(0, len(msg.nodes)-1)
+		}
+		return m, nil
+
+	case browseComposersMsg:
+		m.browseComposers = msg.nodes
+		if m.browseSel >= len(msg.nodes) {
+			m.browseSel = max(0, len(msg.nodes)-1)
+		}
+		return m, nil
+
+	case browseTitlesMsg:
+		m.browseTitles = msg.nodes
+		if m.browseSel >= len(msg.nodes) {
+			m.browseSel = max(0, len(msg.nodes)-1)
+		}
+		return m, nil
+
 	case tickMsg:
 		return m.onTick(time.Time(msg))
 
@@ -94,6 +116,9 @@ func (m Model) onTick(t time.Time) (tea.Model, tea.Cmd) {
 
 	cmds := []tea.Cmd{tickCmd(), m.reconcileCmd()}
 	if m.tickCount%2 == 0 {
+		if m.tab == tabBrowse {
+			cmds = append(cmds, m.refreshBrowseCurrentCmd())
+		}
 		cmds = append(cmds, m.refreshTracksCmd(m.search.Value()))
 	}
 	return m, tea.Batch(cmds...)
@@ -153,6 +178,11 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "4":
 		m.tab = tabLog
 		return m, nil
+	case "5":
+		if m.tab != tabBrowse {
+			m.switchToBrowseTab()
+		}
+		return m, nil
 	case "tab":
 		m.tab = (m.tab + 1) % tabCount
 		return m, nil
@@ -205,6 +235,12 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.eng.Scale(poolStages[m.focusPool], -1)
 
 	case "up", "ctrl+p":
+		if m.tab == tabBrowse {
+			if m.browseSel > 0 {
+				m.browseSel--
+			}
+			return m, nil
+		}
 		if m.tab == tabTracks || m.tab == tabDashboard {
 			if m.sel > 0 {
 				m.sel--
@@ -212,6 +248,13 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case "down", "ctrl+n":
+		if m.tab == tabBrowse {
+			nodes := m.browseNodes()
+			if m.browseSel < len(nodes)-1 {
+				m.browseSel++
+			}
+			return m, nil
+		}
 		if m.tab == tabTracks || m.tab == tabDashboard {
 			if m.sel < len(m.tracks)-1 {
 				m.sel++
@@ -219,15 +262,29 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case "g", "home":
+		if m.tab == tabBrowse {
+			m.browseSel = 0
+			return m, nil
+		}
 		m.sel = 0
 		m.rememberSelection()
 	case "G", "end":
+		if m.tab == tabBrowse {
+			nodes := m.browseNodes()
+			if len(nodes) > 0 {
+				m.browseSel = len(nodes) - 1
+			}
+			return m, nil
+		}
 		if len(m.tracks) > 0 {
 			m.sel = len(m.tracks) - 1
 			m.rememberSelection()
 		}
 
 	case "enter":
+		if m.tab == tabBrowse {
+			return m.browseDrill()
+		}
 		return m, m.playSelected()
 	case " ", "space":
 		if m.play.Playing() || m.play.Current() != "" {
@@ -243,6 +300,11 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.play.Seek(10)
 	case "left":
 		m.play.Seek(-10)
+
+	case "esc", "backspace":
+		if m.tab == tabBrowse && m.browseLevel > 0 {
+			return m.browseBack()
+		}
 	}
 	return m, nil
 }
@@ -316,4 +378,82 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func (m *Model) browseNodes() []db.BrowseEntry {
+	switch m.browseLevel {
+	case 0:
+		return m.browseSources
+	case 1:
+		return m.browseComposers
+	case 2:
+		return m.browseTitles
+	}
+	return nil
+}
+
+func (m *Model) switchToBrowseTab() {
+	m.tab = tabBrowse
+	m.browseLevel = 0
+	m.browseSel = 0
+	m.browseSelSource = ""
+	m.browseSelComposer = ""
+	m.browseSources = nil
+	m.browseComposers = nil
+	m.browseTitles = nil
+}
+
+func (m Model) browseDrill() (tea.Model, tea.Cmd) {
+	nodes := m.browseNodes()
+	if m.browseSel < 0 || m.browseSel >= len(nodes) {
+		return m, nil
+	}
+	sel := nodes[m.browseSel]
+	switch m.browseLevel {
+	case 0:
+		m.browseLevel = 1
+		m.browseSelSource = sel.Name
+		m.browseSel = 0
+		m.browseComposers = nil
+		return m, m.refreshBrowseComposersCmd(sel.Key)
+	case 1:
+		m.browseLevel = 2
+		m.browseSelComposer = sel.Key
+		m.browseSel = 0
+		m.browseTitles = nil
+		return m, m.refreshBrowseTitlesCmd(m.browseSelSource, sel.Key)
+	case 2:
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m Model) browseBack() (tea.Model, tea.Cmd) {
+	switch m.browseLevel {
+	case 1:
+		m.browseLevel = 0
+		m.browseSelSource = ""
+		m.browseSel = 0
+		m.browseComposers = nil
+		return m, m.refreshBrowseSourcesCmd()
+	case 2:
+		m.browseLevel = 1
+		m.browseSelComposer = ""
+		m.browseSel = 0
+		m.browseTitles = nil
+		return m, m.refreshBrowseComposersCmd(m.browseSelSource)
+	}
+	return m, nil
+}
+
+func (m Model) refreshBrowseCurrentCmd() tea.Cmd {
+	switch m.browseLevel {
+	case 0:
+		return m.refreshBrowseSourcesCmd()
+	case 1:
+		return m.refreshBrowseComposersCmd(m.browseSelSource)
+	case 2:
+		return m.refreshBrowseTitlesCmd(m.browseSelSource, m.browseSelComposer)
+	}
+	return nil
 }

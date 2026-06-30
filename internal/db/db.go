@@ -503,3 +503,96 @@ func (d *DB) MarkRequeued(ctx context.Context, id string, cooldownSec int) error
 		 worker=NULL, next_attempt_at=?, updated_at=? WHERE id=?`,
 		core.StatusDiscovered, "requeue: rate-limited", cooldown, now(), id)
 }
+
+// BrowseEntry is a named aggregate used by the browse tree.
+type BrowseEntry struct {
+	Name  string
+	Key   string
+	Count int
+}
+
+// BrowseSources returns sources with playable track counts, alphabetically.
+func (d *DB) BrowseSources(ctx context.Context) ([]BrowseEntry, error) {
+	rows, err := d.sql.QueryContext(ctx,
+		`SELECT source, COUNT(*) FROM tracks
+		 WHERE status='done' AND opus_path IS NOT NULL
+		 GROUP BY source ORDER BY source COLLATE NOCASE`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []BrowseEntry
+	for rows.Next() {
+		var e BrowseEntry
+		if err := rows.Scan(&e.Name, &e.Count); err != nil {
+			return nil, err
+		}
+		e.Key = e.Name
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// BrowseComposers returns composers with playable track counts for a source.
+func (d *DB) BrowseComposers(ctx context.Context, source string) ([]BrowseEntry, error) {
+	rows, err := d.sql.QueryContext(ctx,
+		`SELECT composer, COUNT(*) FROM tracks
+		 WHERE status='done' AND opus_path IS NOT NULL AND source=?
+		 GROUP BY composer ORDER BY composer COLLATE NOCASE`, source)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []BrowseEntry
+	for rows.Next() {
+		var e BrowseEntry
+		var comp sql.NullString
+		if err := rows.Scan(&comp, &e.Count); err != nil {
+			return nil, err
+		}
+		e.Key = comp.String
+		if e.Key == "" {
+			e.Name = "—"
+		} else {
+			e.Name = e.Key
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// BrowseTitles returns titles with playable track counts for source+composer.
+func (d *DB) BrowseTitles(ctx context.Context, source, composer string) ([]BrowseEntry, error) {
+	rows, err := d.sql.QueryContext(ctx,
+		`SELECT title, COUNT(*) FROM tracks
+		 WHERE status='done' AND opus_path IS NOT NULL AND source=? AND composer=?`,
+		source, composer)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []BrowseEntry
+	for rows.Next() {
+		var e BrowseEntry
+		var t sql.NullString
+		if err := rows.Scan(&t, &e.Count); err != nil {
+			return nil, err
+		}
+		e.Key = t.String
+		e.Name = e.Key
+		if e.Name == "" {
+			e.Name = "—"
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// BrowseTracks returns playable tracks matching source+composer+title.
+func (d *DB) BrowseTracks(ctx context.Context, source, composer, title string, limit int) ([]*core.Track, error) {
+	q := `SELECT ` + trackCols + ` FROM tracks
+	      WHERE status='done' AND opus_path IS NOT NULL
+	        AND source=? AND composer=? AND title IS NOT DISTINCT FROM ?
+	      ORDER BY title COLLATE NOCASE LIMIT ?`
+	return d.queryTracks(ctx, q, source, composer, title, limit)
+}
