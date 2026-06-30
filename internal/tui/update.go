@@ -85,6 +85,13 @@ func (m Model) onTick(t time.Time) (tea.Model, tea.Cmd) {
 	m.workers = m.eng.Workers()
 	m.logLines = m.eng.LogLines()
 
+	// Poll player position while a track is playing.
+	if m.nowPlaying != "" && m.play != nil {
+		pos, dur := m.play.Position()
+		m.posSec = pos
+		m.durSec = dur
+	}
+
 	cmds := []tea.Cmd{tickCmd(), m.reconcileCmd()}
 	if m.tickCount%2 == 0 {
 		cmds = append(cmds, m.refreshTracksCmd(m.search.Value()))

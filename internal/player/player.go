@@ -1,19 +1,21 @@
-// Package player provides an in-process audio playback engine using oto
-// on macOS (CGO-free via purego CoreAudio) with ffmpeg for PCM decode.
-// Falls back to afplay/ffplay subprocess.
+// Package player provides an in-process audio playback engine using
+// gopxl/beep + ebittengine/oto for PCM output via CoreAudio (macOS) or
+// ALSA (Linux). Falls back to afplay/ffplay subprocess.
 package player
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sync"
 	"time"
+
+	"github.com/gopxl/beep/v2"
+	"github.com/gopxl/beep/v2/speaker"
+	"github.com/gopxl/beep/v2/wav"
 )
 
 // Event is emitted when track state changes.
@@ -32,10 +34,15 @@ type Player struct {
 	playing *playback
 
 	events  chan Event
-	backend string // "oto" | "afplay" | "ffplay" | ""
+	backend string // "beep" | "afplay" | "ffplay" | ""
 	bin     string // afplay or ffplay binary
 
-	otoAvailable bool
+	// Beep pipeline
+	streamer    beep.StreamSeekCloser
+	ctrl        *beep.Ctrl
+	format      beep.Format
+	sampleRate  beep.SampleRate
+	speakerInit bool
 }
 
 type playback struct {
@@ -43,8 +50,6 @@ type playback struct {
 	cancel context.CancelFunc
 	path   string
 	dur    float64
-	pos    float64
-	paused bool
 	gen    int
 	cmd    *exec.Cmd // for fallback subprocess
 }
@@ -53,19 +58,20 @@ type playback struct {
 func New() *Player {
 	p := &Player{events: make(chan Event, 32)}
 
-	// Check for ffmpeg (needed for in-process playback).
-	ffmpeg, _ := exec.LookPath("ffmpeg")
-
-	if runtime.GOOS == "darwin" && ffmpeg != "" {
-		p.otoAvailable = true
-		p.backend = "oto"
-	}
-
-	if p.backend == "" && runtime.GOOS == "darwin" {
+	if runtime.GOOS == "darwin" {
+		// On macOS, try beep/oto (CoreAudio via ffmpeg decode).
+		if _, err := exec.LookPath("ffmpeg"); err == nil {
+			p.backend = "beep"
+			return p
+		}
+		// Fallback: built-in afplay.
 		if bin, err := exec.LookPath("afplay"); err == nil {
 			p.backend, p.bin = "afplay", bin
+			return p
 		}
 	}
+
+	// Linux / other: try ffplay (shipped with ffmpeg).
 	if p.backend == "" {
 		if bin, err := exec.LookPath("ffplay"); err == nil {
 			p.backend, p.bin = "ffplay", bin
@@ -81,7 +87,7 @@ func (p *Player) Events() <-chan Event { return p.events }
 func (p *Player) PreferredPath(dir, opusRel, cafRel string) string {
 	opus := filepath.Join(dir, opusRel)
 	caf := filepath.Join(dir, cafRel)
-	if p.backend == "oto" || p.backend == "afplay" {
+	if p.backend == "beep" || p.backend == "afplay" {
 		if cafRel != "" {
 			if _, err := os.Stat(caf); err == nil {
 				return caf
@@ -92,13 +98,11 @@ func (p *Player) PreferredPath(dir, opusRel, cafRel string) string {
 				return opus
 			}
 		}
-		// Fallback: return CAF path if set, else opus.
 		if cafRel != "" {
 			return caf
 		}
 		return opus
 	}
-	// ffplay prefers opus.
 	if opusRel != "" {
 		return opus
 	}
@@ -121,21 +125,25 @@ func (p *Player) Play(path string) {
 	p.playing = pb
 	p.mu.Unlock()
 
-	if p.backend == "oto" {
-		go p.playInProcess(pb)
+	if p.backend == "beep" {
+		go p.playBeep(pb)
 	} else {
 		go p.playSubprocess(pb)
 	}
 }
 
-// playbackDone is kept for backward compat.
-
 func (p *Player) Stop() {
 	p.mu.Lock()
 	if p.playing != nil {
 		p.playing.cancel()
-		p.playing = nil
 	}
+	if p.streamer != nil {
+		speaker.Clear()
+		p.streamer.Close()
+		p.streamer = nil
+		p.ctrl = nil
+	}
+	p.playing = nil
 	p.mu.Unlock()
 	p.send(Event{State: "stopped"})
 }
@@ -143,50 +151,75 @@ func (p *Player) Stop() {
 func (p *Player) Pause() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.playing != nil && !p.playing.paused {
-		p.playing.paused = true
-		p.send(Event{State: "paused", PosSec: p.playing.pos, DurSec: p.playing.dur})
+	if p.ctrl == nil {
+		return
 	}
+	speaker.Lock()
+	p.ctrl.Paused = true
+	speaker.Unlock()
+	p.send(Event{State: "paused"})
 }
 
 func (p *Player) Resume() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.playing != nil && p.playing.paused {
-		p.playing.paused = false
-		p.send(Event{State: "playing", PosSec: p.playing.pos, DurSec: p.playing.dur})
+	if p.ctrl == nil {
+		return
 	}
+	speaker.Lock()
+	p.ctrl.Paused = false
+	speaker.Unlock()
+	p.send(Event{State: "playing"})
 }
 
 func (p *Player) Seek(relSec float64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.playing == nil {
+	if p.streamer == nil || p.format.SampleRate == 0 {
 		return
 	}
-	p.playing.pos += relSec
-	if p.playing.pos < 0 {
-		p.playing.pos = 0
+	speaker.Lock()
+	pos := p.streamer.Position()
+	length := p.streamer.Len()
+	delta := p.format.SampleRate.N(time.Duration(relSec * float64(time.Second)))
+	newPos := pos + delta
+	if newPos < 0 {
+		newPos = 0
 	}
-	if p.playing.pos > p.playing.dur {
-		p.playing.pos = p.playing.dur
+	if length > 0 && newPos >= length {
+		newPos = length - 1
 	}
-	p.send(Event{State: "playing", PosSec: p.playing.pos, DurSec: p.playing.dur})
+	if newPos >= 0 {
+		_ = p.streamer.Seek(newPos)
+	}
+	speaker.Unlock()
 }
 
 func (p *Player) Position() (pos, dur float64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.playing != nil {
-		return p.playing.pos, p.playing.dur
+	if p.streamer == nil || p.format.SampleRate == 0 {
+		if p.playing != nil {
+			return 0, p.playing.dur
+		}
+		return 0, 0
 	}
-	return 0, 0
+	speaker.Lock()
+	samplePos := p.streamer.Position()
+	sampleLen := p.streamer.Len()
+	speaker.Unlock()
+	pos = p.format.SampleRate.D(samplePos).Seconds()
+	dur = p.format.SampleRate.D(sampleLen).Seconds()
+	if dur == 0 && p.playing != nil {
+		dur = p.playing.dur
+	}
+	return
 }
 
 func (p *Player) Playing() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.playing != nil && !p.playing.paused
+	return p.ctrl != nil && !p.ctrl.Paused
 }
 
 func (p *Player) Current() string {
@@ -217,8 +250,8 @@ func probeDuration(path string) float64 {
 	return d
 }
 
-func (p *Player) playInProcess(pb *playback) {
-	// Decode to WAV via ffmpeg pipe.
+// playBeep decodes the audio file via ffmpeg and plays it through beep/oto.
+func (p *Player) playBeep(pb *playback) {
 	args := []string{
 		"-hide_banner", "-loglevel", "error",
 		"-i", pb.path,
@@ -238,40 +271,86 @@ func (p *Player) playInProcess(pb *playback) {
 	}
 	pb.cmd = cmd
 
-	p.send(Event{State: "loading", Path: pb.path, DurSec: pb.dur})
-
-	// Read WAV header to find data chunk.
-	dataReader, dataSize, sampleRate, err := skipWAVHeader(stdout)
+	// Decode WAV stream with beep.
+	streamer, format, err := wav.Decode(stdout)
 	if err != nil {
-		// Fall back to subprocess.
 		cmd.Process.Kill()
 		cmd.Wait()
 		p.playSubprocessFallback(pb)
 		return
 	}
 
-	// Try oto playback.
-	if err := p.playPCM(pb, dataReader, dataSize, sampleRate); err != nil {
-		p.send(Event{Path: pb.path, Err: err.Error(), Ended: true})
+	p.mu.Lock()
+	p.streamer = streamer
+	p.format = format
+	p.ctrl = &beep.Ctrl{Streamer: streamer, Paused: false}
+	p.mu.Unlock()
+
+	// One-time speaker init.
+	if !p.speakerInit {
+		bufSize := format.SampleRate.N(time.Second / 10)
+		if err := speaker.Init(format.SampleRate, bufSize); err != nil {
+			p.send(Event{Path: pb.path, Err: fmt.Sprintf("audio init: %v", err), Ended: true})
+			streamer.Close()
+			cmd.Process.Kill()
+			cmd.Wait()
+			return
+		}
+		p.sampleRate = format.SampleRate
+		p.speakerInit = true
 	}
+
+	// Resample if sample rate differs from the first initialised stream.
+	p.mu.Lock()
+	var s beep.Streamer = streamer
+	if format.SampleRate != p.sampleRate {
+		s = beep.Resample(4, format.SampleRate, p.sampleRate, streamer)
+	}
+	p.ctrl.Streamer = s
+	p.mu.Unlock()
+
+	p.send(Event{State: "loading", Path: pb.path, DurSec: pb.dur})
+
+	done := make(chan struct{})
+	speaker.Play(beep.Seq(p.ctrl, beep.Callback(func() {
+		close(done)
+	})))
+	p.send(Event{State: "playing", Path: pb.path, DurSec: pb.dur})
+
+	// Wait until track finishes or is cancelled.
+	select {
+	case <-done:
+	case <-pb.ctx.Done():
+	}
+
 	cmd.Wait()
 	p.mu.Lock()
-	if p.playing != nil && p.playing.gen == pb.gen {
+	if p.streamer == streamer {
+		p.streamer.Close()
+		p.streamer = nil
+		p.ctrl = nil
+	}
+	stillCurrent := p.playing != nil && p.playing.gen == pb.gen
+	if stillCurrent {
 		p.playing = nil
-		p.mu.Unlock()
+	}
+	p.mu.Unlock()
+	if stillCurrent {
 		p.send(Event{Path: pb.path, Ended: true, DurSec: pb.dur, State: "stopped"})
-	} else {
-		p.mu.Unlock()
 	}
 }
 
 func (p *Player) playSubprocessFallback(pb *playback) {
-	p.backend = "afplay"
-	if bin, err := exec.LookPath("afplay"); err == nil {
-		p.bin = bin
-	} else if bin, err := exec.LookPath("ffplay"); err == nil {
-		p.backend = "ffplay"
-		p.bin = bin
+	if runtime.GOOS == "darwin" {
+		p.backend = "afplay"
+		if bin, err := exec.LookPath("afplay"); err == nil {
+			p.bin = bin
+		}
+	}
+	if p.backend == "" || p.backend == "beep" {
+		if bin, err := exec.LookPath("ffplay"); err == nil {
+			p.backend, p.bin = "ffplay", bin
+		}
 	}
 	p.playSubprocess(pb)
 }
@@ -302,71 +381,4 @@ func (p *Player) playSubprocess(pb *playback) {
 		ev.Err = err.Error()
 	}
 	p.send(ev)
-}
-
-// playPCM reads PCM samples and feeds them to oto. For now, we just count
-// bytes and estimate position since we don't have oto integrated yet.
-// The position tracking is done by byte counting: each sample pair (L+R
-// 16-bit) at 44100 Hz = 176400 bytes per second.
-func (p *Player) playPCM(pb *playback, r io.Reader, totalBytes int64, sampleRate int) error {
-	bytesPerSec := int64(sampleRate * 4) // 2 channels × 2 bytes
-	buf := make([]byte, 32*1024)
-	var read int64
-
-	for {
-		if pb.ctx.Err() != nil {
-			return pb.ctx.Err()
-		}
-		p.mu.Lock()
-		paused := pb.paused
-		p.mu.Unlock()
-		if paused {
-			time.Sleep(100 * time.Millisecond)
-			continue
-		}
-
-		n, err := r.Read(buf)
-		if n > 0 {
-			read += int64(n)
-			p.mu.Lock()
-			pb.pos = float64(read) / float64(bytesPerSec)
-			p.mu.Unlock()
-
-			// Emit position approximately every 250ms.
-			if read%(bytesPerSec/4) < int64(len(buf)) {
-				p.send(Event{State: "playing", PosSec: pb.pos, DurSec: pb.dur})
-			}
-		}
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// WAV header parsing.
-
-const wavHeaderSize = 44
-
-func skipWAVHeader(r io.Reader) (io.Reader, int64, int, error) {
-	hdr := make([]byte, wavHeaderSize)
-	if _, err := io.ReadFull(r, hdr); err != nil {
-		return nil, 0, 0, fmt.Errorf("wav header: %w", err)
-	}
-	if string(hdr[0:4]) != "RIFF" || string(hdr[8:12]) != "WAVE" || string(hdr[12:16]) != "fmt " {
-		return nil, 0, 0, fmt.Errorf("not a WAV file")
-	}
-	sampleRate := int(binary.LittleEndian.Uint32(hdr[24:28]))
-	// Find the "data" chunk.
-	// For simplicity, assume standard layout: data chunk starts at offset 44.
-	// Actually, ffmpeg produces a standard WAV with fmt then data.
-	dataSize := int64(binary.LittleEndian.Uint32(hdr[40:44]))
-	if dataSize == 0 {
-		// Read to end.
-		dataSize = 1 << 30 // large estimate
-	}
-	return r, dataSize, sampleRate, nil
 }
