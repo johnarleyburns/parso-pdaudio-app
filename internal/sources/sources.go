@@ -136,6 +136,7 @@ func Build(keys []string, client *provider.Client, opts *BuildOpts) ([]provider.
 					MinDurationSec:     30,
 					LicensePolicy:      policy,
 					ComposerAllowlist:  nil,
+					PageSize:           100,
 					Client:             client,
 				})
 			} else {

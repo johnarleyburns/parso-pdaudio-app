@@ -26,8 +26,8 @@ const (
 	tabDashboard = iota
 	tabTracks
 	tabPlayer
-	tabLog
 	tabBrowse
+	tabLog
 )
 
 // Messages.
@@ -86,13 +86,13 @@ type Model struct {
 	tickCount    int
 
 	// browse pane
-	browseLevel           int // 0=source, 1=composer, 2=title
-	browseSel             int
-	browseSelSource       string
-	browseSelComposer     string
-	browseSources         []db.BrowseEntry
-	browseComposers       []db.BrowseEntry
-	browseTitles          []db.BrowseEntry
+	browseLevel       int // 0=source, 1=composer, 2=title
+	browseSel         int
+	browseSelSource   string
+	browseSelComposer string
+	browseSources     []db.BrowseEntry
+	browseComposers   []db.BrowseEntry
+	browseTitles      []db.BrowseEntry
 
 	// controls
 	focusPool int

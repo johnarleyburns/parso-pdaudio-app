@@ -27,16 +27,20 @@ type ClassicalCategoriesProvider struct {
 	MinDurationSec     float64
 	LicensePolicy      string // "strict" or "attribution"
 	ComposerAllowlist  []string
+	PageSize           int // candidates per Discover call (0 = unlimited)
 	Client             *Client
 
-	// state populated on first Discover call
-	composerList []composerInfo
-	initialized  bool
+	// state populated across Discover calls
+	composerList    []composerInfo
+	initialized     bool
+	pendingFiles    []fileWithCtx // files already collected but not yet resolved
+	pendingComposer string        // composer name for pending files
+	pendingIndex    int           // index of the composer whose files are pending
 }
 
 type composerInfo struct {
-	CategoryTitle string // full category title e.g. "Category:Audio files of music by Ludwig van Beethoven"
-	Name          string // extracted composer name e.g. "Ludwig van Beethoven"
+	CategoryTitle string
+	Name          string
 }
 
 // Key implements Provider.
@@ -83,9 +87,15 @@ func decodeCCCursor(s string) ccCursor {
 
 // --- Discover ---
 
-// Discover processes one composer per call. Cursor encodes the composer index.
+// Discover returns candidates in pages. Each call processes up to PageSize
+// files from the current composer, traversing+resolving on demand so the
+// caller sees results and progress instead of a single long synchronous wait.
 func (p *ClassicalCategoriesProvider) Discover(ctx context.Context, cursor string) ([]core.Candidate, string, bool, error) {
 	cur := decodeCCCursor(cursor)
+	pageSize := p.PageSize
+	if pageSize <= 0 {
+		pageSize = 100
+	}
 
 	// Initialize composer list on first call
 	if !p.initialized {
@@ -97,32 +107,75 @@ func (p *ClassicalCategoriesProvider) Discover(ctx context.Context, cursor strin
 		p.initialized = true
 	}
 
-	if cur.ComposerIndex >= len(p.composerList) {
-		return nil, "", true, nil
-	}
+	// Accumulate candidates until we have enough or run out of composers.
+	var candidates []core.Candidate
+	startIndex := cur.ComposerIndex
 
-	ci := p.composerList[cur.ComposerIndex]
+	for {
+		// Reached end of composer list
+		if cur.ComposerIndex >= len(p.composerList) {
+			done := len(candidates) == 0
+			return candidates, cur.encode(), done, nil
+		}
 
-	// Traverse and resolve for this composer; on error skip to next
-	candidates, err := p.processComposer(ctx, ci)
-	cur.ComposerIndex++
-	done := cur.ComposerIndex >= len(p.composerList)
-	if err != nil {
-		return nil, cur.encode(), done, nil
-	}
-	return candidates, cur.encode(), done, nil
-}
+		ci := p.composerList[cur.ComposerIndex]
 
-// processComposer traverses one composer's category tree and returns candidates.
-func (p *ClassicalCategoriesProvider) processComposer(ctx context.Context, ci composerInfo) ([]core.Candidate, error) {
-	fileTitles, err := p.traverse(ctx, ci.CategoryTitle)
-	if err != nil {
-		return nil, err
+		// Need to collect more files for this composer?
+		if len(p.pendingFiles) == 0 || p.pendingIndex != cur.ComposerIndex {
+			p.pendingComposer = ci.Name
+			p.pendingIndex = cur.ComposerIndex
+			var err error
+			p.pendingFiles, err = p.traverse(ctx, ci.CategoryTitle)
+			if err != nil || len(p.pendingFiles) == 0 {
+				p.pendingFiles = nil
+				cur.ComposerIndex++
+				// If we've already found some candidates, return them
+				if len(candidates) > 0 {
+					return candidates, cur.encode(), false, nil
+				}
+				continue
+			}
+		}
+
+		// Take a page of files from pending
+		batch := p.pendingFiles
+		if len(batch) > pageSize {
+			batch = batch[:pageSize]
+		}
+		p.pendingFiles = p.pendingFiles[len(batch):]
+		if len(p.pendingFiles) == 0 {
+			p.pendingFiles = nil
+		}
+
+		// Resolve this batch
+		resolved, err := p.resolveFiles(ctx, ci.Name, batch)
+		if err != nil {
+			p.pendingFiles = nil
+			cur.ComposerIndex++
+			if len(candidates) > 0 {
+				return candidates, cur.encode(), false, nil
+			}
+			continue
+		}
+
+		candidates = append(candidates, resolved...)
+
+		// If we've collected enough candidates or this composer is drained,
+		// return what we have.
+		if len(candidates) >= pageSize || len(p.pendingFiles) == 0 {
+			if len(p.pendingFiles) == 0 {
+				cur.ComposerIndex++
+			}
+			return candidates, cur.encode(), false, nil
+		}
+
+		// If we passed through multiple composers to get here, return
+		if cur.ComposerIndex > startIndex {
+			return candidates, cur.encode(), false, nil
+		}
+
+		// Still need more — continue with same composer
 	}
-	if len(fileTitles) == 0 {
-		return nil, nil
-	}
-	return p.resolveFiles(ctx, ci.Name, fileTitles)
 }
 
 // fetchComposerList fetches subcategories of the root category and extracts
@@ -189,7 +242,7 @@ func (p *ClassicalCategoriesProvider) fetchComposerList(ctx context.Context) ([]
 // fileWithCtx attaches the originating subcategory title for performer extraction.
 type fileWithCtx struct {
 	title  string
-	catCtx string // the immediate category containing this file
+	catCtx string
 }
 
 // traverse does a depth-limited, cycle-safe DFS through a composer's category tree.
@@ -273,7 +326,7 @@ func (p *ClassicalCategoriesProvider) resolveFiles(ctx context.Context, composer
 	groups := map[string]*core.Candidate{}
 	var order []string
 
-	// Collect titles, deduplicate first
+	// Collect titles, deduplicate
 	seen := map[string]bool{}
 	var titles []string
 	for _, f := range files {
@@ -282,8 +335,11 @@ func (p *ClassicalCategoriesProvider) resolveFiles(ctx context.Context, composer
 			titles = append(titles, f.title)
 		}
 	}
+	if len(titles) == 0 {
+		return nil, nil
+	}
 
-	// Build a reverse lookup: title -> fileWithCtx for performer extraction
+	// Build reverse lookup for performer extraction
 	ctxMap := map[string]string{}
 	for _, f := range files {
 		if ctxMap[f.title] == "" {
@@ -349,7 +405,7 @@ func (p *ClassicalCategoriesProvider) resolveFiles(ctx context.Context, composer
 				continue
 			}
 
-			title := cleanTitle(page.Title)
+			displayTitle := cleanTitle(page.Title)
 			workKey := classicalWorkKey(page.Title)
 
 			cf := core.CandidateFile{URL: ii.URL, Format: token, Bytes: ii.Size}
@@ -358,7 +414,6 @@ func (p *ClassicalCategoriesProvider) resolveFiles(ctx context.Context, composer
 				dateRaw := stripHTML(extFn("DateTimeOriginal"))
 				artist := stripHTML(extFn("Artist"))
 
-				// Performer from category context (B.3.5 / field mapping)
 				performer := artist
 				if catCtx, has := ctxMap[page.Title]; has {
 					if cp := extractPerformerFromCategory(catCtx); cp != "" {
@@ -366,13 +421,13 @@ func (p *ClassicalCategoriesProvider) resolveFiles(ctx context.Context, composer
 					}
 				}
 
-				_, work, movement := parseClassicalTitle(title)
+				_, work, movement := parseClassicalTitle(displayTitle)
 
 				cand = &core.Candidate{
 					SourceItem: page.Title,
 					WorkKey:    workKey,
 					Meta: core.StructuredMeta{
-						Title:        title,
+						Title:        displayTitle,
 						Work:         work,
 						Movement:     movement,
 						Composer:     composerName,
@@ -399,7 +454,6 @@ func (p *ClassicalCategoriesProvider) resolveFiles(ctx context.Context, composer
 
 // --- Filtering helpers ---
 
-// isAudioMimeClassical implements B.3.1 audio mime gate.
 func isAudioMimeClassical(mime, ext string) bool {
 	if strings.HasPrefix(mime, "audio/") && mime != "audio/midi" {
 		return true
@@ -430,7 +484,6 @@ func extToFormat(ext string) string {
 	return ""
 }
 
-// classicalFormatToken wraps commonsFormatToken with an extension-based fallback.
 func classicalFormatToken(mime, title string) string {
 	t := commonsFormatToken(mime, title)
 	if t != "" {
@@ -440,7 +493,6 @@ func classicalFormatToken(mime, title string) string {
 	return extToFormat(ext)
 }
 
-// licenseAllowed checks license against the configured policy (B.3.3).
 func (p *ClassicalCategoriesProvider) licenseAllowed(short string) bool {
 	if short == "" {
 		return false
@@ -448,7 +500,7 @@ func (p *ClassicalCategoriesProvider) licenseAllowed(short string) bool {
 	switch p.LicensePolicy {
 	case "attribution":
 		return isPDOrCC0(short) || isAttributionLicense(short)
-	default: // "strict"
+	default:
 		return isPDOrCC0(short)
 	}
 }
@@ -472,7 +524,6 @@ func isAttributionLicense(short string) bool {
 	return false
 }
 
-// isSkippableSubcat implements B.2 skip-subcat patterns.
 func isSkippableSubcat(title string, patterns []string) bool {
 	lower := strings.ToLower(title)
 	for _, pat := range patterns {
@@ -488,22 +539,17 @@ func isSkippableSubcat(title string, patterns []string) bool {
 var composerFromCatRe = regexp.MustCompile(`Category:Audio files of (?:classical )?music by `)
 
 func extractComposerFromCategory(title string) string {
-	// First try the standard "Category:Audio files of [classical] music by <Composer>" pattern
 	if s := composerFromCatRe.FindString(title); s != "" {
 		return strings.TrimSpace(strings.TrimPrefix(title, s))
 	}
-	// Handle performer subcategories like "Category:Audio files of Beethoven's ..."
-	// Strip leading "Category:" then "Audio files of "
 	t := strings.TrimPrefix(title, "Category:")
 	t = strings.TrimPrefix(t, "Audio files of ")
-	// If possessive "'s " appears, take the name before it
 	if idx := strings.Index(t, "'s "); idx > 0 {
 		pre := t[:idx]
 		if !strings.Contains(strings.ToLower(pre), "played by") {
 			return strings.TrimSpace(pre)
 		}
 	}
-	// If "music by" or "classical music by" appears, take what follows
 	for _, prefix := range []string{"classical music by ", "music by "} {
 		if idx := strings.Index(strings.ToLower(t), prefix); idx >= 0 {
 			return strings.TrimSpace(t[idx+len(prefix):])
@@ -512,7 +558,6 @@ func extractComposerFromCategory(title string) string {
 	return strings.TrimSpace(t)
 }
 
-// extractPerformerFromCategory looks for "Played by <X>" in the category title.
 func extractPerformerFromCategory(title string) string {
 	lower := strings.ToLower(title)
 	idx := strings.Index(lower, "played by")
@@ -548,14 +593,11 @@ var diacReplacer = strings.NewReplacer(
 	"ğ", "g", "ş", "s", "ı", "i",
 )
 
-// classicalWorkKey builds a dedup key: lowercased, extension stripped, format
-// qualifier words removed, whitespace collapsed, diacritics folded (B.3.5).
 func classicalWorkKey(title string) string {
 	t := cleanTitle(title)
 	t = fmtWordRe.ReplaceAllString(t, "")
 	t = strings.ToLower(t)
 	t = diacReplacer.Replace(t)
-	// Normalize any remaining diacritics via NFKD
 	t = norm.NFKD.String(t)
 	var b strings.Builder
 	for _, r := range t {

@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"testing"
 )
 
@@ -364,6 +365,62 @@ func TestDiacriticsFoldingInWorkKey(t *testing.T) {
 		if got != c.want {
 			t.Errorf("classicalWorkKey(%q) = %q, want %q", c.input, got, c.want)
 		}
+	}
+}
+
+// --- Discover paging behavior ---
+
+func TestDiscoverDoneWhenNoComposers(t *testing.T) {
+	p := &ClassicalCategoriesProvider{
+		SourceKey:    "test",
+		RootCategory: "Category:Test",
+		PageSize:     50,
+	}
+	p.initialized = true
+	p.composerList = nil
+
+	cands, next, done, err := p.Discover(context.Background(), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !done {
+		t.Fatal("should be done when no composers")
+	}
+	if len(cands) != 0 {
+		t.Fatalf("expected 0 candidates, got %d", len(cands))
+	}
+	// Empty cursor advances to 0
+	c := decodeCCCursor(next)
+	if c.ComposerIndex != 0 {
+		t.Fatalf("cursor composer index: got %d, want 0", c.ComposerIndex)
+	}
+}
+
+func TestCursorReachesEnd(t *testing.T) {
+	p := &ClassicalCategoriesProvider{
+		SourceKey: "test",
+		PageSize:  50,
+	}
+	p.initialized = true
+	p.composerList = []composerInfo{
+		{CategoryTitle: "Cat1", Name: "C1"},
+	}
+
+	// Cursor past end → done with no candidates
+	cursor := ccCursor{ComposerIndex: 1}.encode()
+	cands, next, done, err := p.Discover(context.Background(), cursor)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !done {
+		t.Fatal("should be done")
+	}
+	if len(cands) != 0 {
+		t.Fatalf("expected 0 candidates, got %d", len(cands))
+	}
+	c := decodeCCCursor(next)
+	if c.ComposerIndex != 1 {
+		t.Fatalf("cursor should stay at 1, got %d", c.ComposerIndex)
 	}
 }
 
