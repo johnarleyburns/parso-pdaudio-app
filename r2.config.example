@@ -1,0 +1,9 @@
+{
+  "_readme": "Copy to ~/.parso-r2.json or ./r2.config.json (both gitignored) and fill in real values. NEVER commit the real bucket name or credentials. Any field may be overridden by env vars R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_BUCKET / R2_ENDPOINT? / R2_PUBLIC_BASE_URL. account_id also falls back to ~/.cloudflare-r2-api-account-id.",
+  "_readme_profiles": "For separate read-only vs read-write S3 keys, put the access-key-id / secret-access-key / endpoint URL in single-value files named <prefix><mode>-token-<field>, where mode is 'read' or 'rw', field is access-key-id | secret-access-key | url, and prefix defaults to ~/.cloudflare-pdaudio- (override with R2_PROFILE_PREFIX). `parso sync` uses the rw profile; `parso-player` uses the read profile. Keep only 'bucket' (and optional public_base_url) in this JSON file.",
+  "bucket": "your-bucket-name",
+  "endpoint_url": "",
+  "access_key_id": "",
+  "secret_access_key": "",
+  "public_base_url": ""
+}

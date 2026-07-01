@@ -328,7 +328,7 @@ func (m *Model) playTrack(t *core.Track) tea.Cmd {
 	if t == nil {
 		return nil
 	}
-	if t.Status != core.StatusDone || t.OpusPath == "" {
+	if t.Status != core.StatusDone || t.CafPath == "" {
 		m.statusLine = "not playable yet (status " + t.Status + ")"
 		return nil
 	}
@@ -339,7 +339,7 @@ func (m *Model) playTrack(t *core.Track) tea.Cmd {
 	path := m.play.PreferredPath(m.cfg.Dir, t.OpusPath, t.CafPath)
 	m.play.Play(path)
 	m.nowPlaying = t.ID
-	m.nowTitle = displayTitle(t)
+	m.nowTitle = core.DisplayTitle(t, core.DisplayGlobal)
 	m.statusLine = "playing: " + m.nowTitle
 	return nil
 }
@@ -399,7 +399,7 @@ func (m *Model) browseNodes() []db.BrowseEntry {
 	case 3:
 		entries := make([]db.BrowseEntry, len(m.browseTracks))
 		for i, t := range m.browseTracks {
-			entries[i] = db.BrowseEntry{Name: displayTitle(t), Key: t.ID}
+			entries[i] = db.BrowseEntry{Name: core.DisplayTitle(t, core.DisplayWork), Key: t.ID}
 		}
 		return entries
 	}
@@ -427,6 +427,7 @@ func (m *Model) switchToBrowseTab() {
 	m.browseSelSource = ""
 	m.browseSelComposer = ""
 	m.browseSelTitle = ""
+	m.browseSelWorkKey = ""
 	m.browseSources = nil
 	m.browseComposers = nil
 	m.browseTitles = nil
@@ -455,9 +456,10 @@ func (m Model) browseDrill() (tea.Model, tea.Cmd) {
 	case 2:
 		m.browseLevel = 3
 		m.browseSelTitle = sel.Name
+		m.browseSelWorkKey = sel.Key
 		m.browseSel = 0
 		m.browseTracks = nil
-		return m, m.refreshBrowseTracksCmd(m.browseSelSource, m.browseSelComposer, sel.Key)
+		return m, m.refreshBrowseTracksCmd(sel.Key)
 	case 3:
 		if m.browseSel >= 0 && m.browseSel < len(m.browseTracks) {
 			return m, m.playTrack(m.browseTracks[m.browseSel])
@@ -486,6 +488,7 @@ func (m Model) browseBack() (tea.Model, tea.Cmd) {
 	case 3:
 		m.browseLevel = 2
 		m.browseSelTitle = ""
+		m.browseSelWorkKey = ""
 		m.browseSel = 0
 		m.browseTracks = nil
 		return m, m.refreshBrowseTitlesCmd(m.browseSelSource, m.browseSelComposer)
@@ -502,8 +505,8 @@ func (m Model) refreshBrowseCurrentCmd() tea.Cmd {
 	case 2:
 		return m.refreshBrowseTitlesCmd(m.browseSelSource, m.browseSelComposer)
 	case 3:
-		if m.browseSelTitle != "" {
-			return m.refreshBrowseTracksCmd(m.browseSelSource, m.browseSelComposer, m.browseSelTitle)
+		if m.browseSelWorkKey != "" {
+			return m.refreshBrowseTracksCmd(m.browseSelWorkKey)
 		}
 		return nil
 	}

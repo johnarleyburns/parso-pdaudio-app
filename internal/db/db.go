@@ -80,7 +80,36 @@ CREATE TABLE IF NOT EXISTS source_state (
     discovered_at INTEGER,
     total_known   INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS works (
+    id                 TEXT PRIMARY KEY,
+    composer_canonical TEXT,
+    title              TEXT,
+    catalog            TEXT,
+    sort_key           TEXT,
+    track_count        INTEGER NOT NULL DEFAULT 0,
+    created_at         INTEGER NOT NULL
+);
 `
+
+// enrichDedupColumns are added idempotently on open for DBs created before the
+// enrichment/dedup work existed (SQLite has no IF NOT EXISTS for ADD COLUMN, so
+// the errors are ignored when the column is already present).
+var enrichDedupColumns = []string{
+	`ALTER TABLE tracks ADD COLUMN composer_canonical TEXT`,
+	`ALTER TABLE tracks ADD COLUMN work_id TEXT`,
+	`ALTER TABLE tracks ADD COLUMN work_title TEXT`,
+	`ALTER TABLE tracks ADD COLUMN catalog TEXT`,
+	`ALTER TABLE tracks ADD COLUMN movement_index INTEGER`,
+	`ALTER TABLE tracks ADD COLUMN movement_title TEXT`,
+	`ALTER TABLE tracks ADD COLUMN display_title TEXT`,
+	`ALTER TABLE tracks ADD COLUMN composer_corrected INTEGER`,
+	`ALTER TABLE tracks ADD COLUMN audio_fingerprint TEXT`,
+	`ALTER TABLE tracks ADD COLUMN dup_of TEXT`,
+	`ALTER TABLE tracks ADD COLUMN enrich_model TEXT`,
+	`ALTER TABLE tracks ADD COLUMN enrich_confidence REAL`,
+	`ALTER TABLE tracks ADD COLUMN enriched_at INTEGER`,
+}
 
 // Open opens (creating if needed) the library DB inside dir with WAL mode.
 func Open(dir string) (*DB, error) {
@@ -108,6 +137,13 @@ func Open(dir string) (*DB, error) {
 	// Add next_attempt_at for existing DBs created before this column existed.
 	_, _ = sdb.ExecContext(context.Background(),
 		`ALTER TABLE tracks ADD COLUMN next_attempt_at INTEGER`)
+	// Add enrichment/dedup columns for existing DBs (idempotent; ignore errors
+	// for columns that already exist).
+	for _, stmt := range enrichDedupColumns {
+		_, _ = sdb.ExecContext(context.Background(), stmt)
+	}
+	_, _ = sdb.ExecContext(context.Background(),
+		`CREATE INDEX IF NOT EXISTS idx_tracks_work ON tracks(work_id)`)
 	return &DB{sql: sdb, dir: dir}, nil
 }
 
@@ -234,6 +270,15 @@ func (d *DB) SetDone(ctx context.Context, id string) error {
 		core.StatusDone, now(), id)
 }
 
+// SetDoneCAFOnly marks a track done and clears opus_path/opus_bytes because the
+// standalone opus file has been deleted (CAF is the sole persisted format).
+func (d *DB) SetDoneCAFOnly(ctx context.Context, id string) error {
+	return d.update(ctx,
+		`UPDATE tracks SET status=?, opus_path=NULL, opus_bytes=NULL,
+		 worker=NULL, updated_at=? WHERE id=?`,
+		core.StatusDone, now(), id)
+}
+
 // MarkFailed records a stage failure and increments attempts.
 func (d *DB) MarkFailed(ctx context.Context, id, stageErr string) error {
 	return d.update(ctx,
@@ -344,7 +389,9 @@ func (d *DB) GetSourceCursor(ctx context.Context, source string) (string, error)
 const trackCols = `id, source, source_item, title, work, movement, composer,
 performer, album, year, date_raw, duration_sec, original_url, original_format,
 original_codec, original_bytes, original_sha1, opus_path, opus_bytes, caf_path,
-caf_bytes, license_short, license_url, status, attempts, stage_error`
+caf_bytes, license_short, license_url, status, attempts, stage_error,
+composer_canonical, work_id, work_title, catalog, movement_index, movement_title,
+display_title, composer_corrected, audio_fingerprint, dup_of`
 
 func scanTrack(s interface{ Scan(...any) error }) (*core.Track, error) {
 	t := &core.Track{}
@@ -352,10 +399,14 @@ func scanTrack(s interface{ Scan(...any) error }) (*core.Track, error) {
 	var origFmt, origCodec, origSHA, opus, caf, licS, licU, stageErr sql.NullString
 	var year, origBytes, opusBytes, cafBytes sql.NullInt64
 	var dur sql.NullFloat64
+	var compCanon, workID, workTitle, catalog, movTitle, disp, fp, dupOf sql.NullString
+	var movIdx, compCorrected sql.NullInt64
 	err := s.Scan(&t.ID, &t.Source, &item, &title, &work, &mov, &comp, &perf,
 		&alb, &year, &dateRaw, &dur, &t.OriginalURL, &origFmt, &origCodec,
 		&origBytes, &origSHA, &opus, &opusBytes, &caf, &cafBytes, &licS, &licU,
-		&t.Status, &t.Attempts, &stageErr)
+		&t.Status, &t.Attempts, &stageErr,
+		&compCanon, &workID, &workTitle, &catalog, &movIdx, &movTitle,
+		&disp, &compCorrected, &fp, &dupOf)
 	if err != nil {
 		return nil, err
 	}
@@ -368,6 +419,10 @@ func scanTrack(s interface{ Scan(...any) error }) (*core.Track, error) {
 	t.OpusPath, t.OpusBytes = opus.String, opusBytes.Int64
 	t.CafPath, t.CafBytes = caf.String, cafBytes.Int64
 	t.LicenseShort, t.LicenseURL, t.StageError = licS.String, licU.String, stageErr.String
+	t.ComposerCanonical, t.WorkID, t.WorkTitle = compCanon.String, workID.String, workTitle.String
+	t.Catalog, t.MovementTitle, t.DisplayTitleText = catalog.String, movTitle.String, disp.String
+	t.MovementIndex, t.ComposerCorrected = int(movIdx.Int64), compCorrected.Int64 != 0
+	t.AudioFingerprint, t.DupOf = fp.String, dupOf.String
 	return t, nil
 }
 
@@ -380,7 +435,7 @@ func (d *DB) GetTrack(ctx context.Context, id string) (*core.Track, error) {
 // ListPlayable returns done tracks (with kept artifacts) ordered for display.
 func (d *DB) ListPlayable(ctx context.Context, limit int) ([]*core.Track, error) {
 	q := `SELECT ` + trackCols + ` FROM tracks
-	      WHERE status='done' AND opus_path IS NOT NULL
+	      WHERE status='done' AND caf_path IS NOT NULL AND dup_of IS NULL
 	      ORDER BY source, composer, work, title LIMIT ?`
 	return d.queryTracks(ctx, q, limit)
 }
@@ -402,7 +457,7 @@ func (d *DB) Search(ctx context.Context, query string, playableOnly bool, limit 
 	}
 	cond := ""
 	if playableOnly {
-		cond = ` AND t.status='done' AND t.opus_path IS NOT NULL`
+		cond = ` AND t.status='done' AND t.caf_path IS NOT NULL AND t.dup_of IS NULL`
 	}
 	q := `SELECT ` + prefixCols("t.") + `
 	      FROM tracks_fts f JOIN tracks t ON t.id = f.track_id
@@ -515,7 +570,7 @@ type BrowseEntry struct {
 func (d *DB) BrowseSources(ctx context.Context) ([]BrowseEntry, error) {
 	rows, err := d.sql.QueryContext(ctx,
 		`SELECT source, COUNT(*) FROM tracks
-		 WHERE status='done' AND opus_path IS NOT NULL
+		 WHERE status='done' AND caf_path IS NOT NULL AND dup_of IS NULL
 		 GROUP BY source ORDER BY source COLLATE NOCASE`)
 	if err != nil {
 		return nil, err
@@ -537,7 +592,7 @@ func (d *DB) BrowseSources(ctx context.Context) ([]BrowseEntry, error) {
 func (d *DB) BrowseComposers(ctx context.Context, source string) ([]BrowseEntry, error) {
 	rows, err := d.sql.QueryContext(ctx,
 		`SELECT composer, COUNT(*) FROM tracks
-		 WHERE status='done' AND opus_path IS NOT NULL AND source=?
+		 WHERE status='done' AND caf_path IS NOT NULL AND dup_of IS NULL AND source=?
 		 GROUP BY composer ORDER BY composer COLLATE NOCASE`, source)
 	if err != nil {
 		return nil, err
@@ -565,7 +620,7 @@ func (d *DB) BrowseComposers(ctx context.Context, source string) ([]BrowseEntry,
 func (d *DB) BrowseTitles(ctx context.Context, source, composer string) ([]BrowseEntry, error) {
 	rows, err := d.sql.QueryContext(ctx,
 		`SELECT title, COUNT(*) FROM tracks
-		 WHERE status='done' AND opus_path IS NOT NULL AND source=? AND (composer IS NOT DISTINCT FROM ?)
+		 WHERE status='done' AND caf_path IS NOT NULL AND dup_of IS NULL AND source=? AND (composer IS NOT DISTINCT FROM ?)
 		 GROUP BY title COLLATE NOCASE ORDER BY title COLLATE NOCASE`,
 		source, composer)
 	if err != nil {
@@ -592,7 +647,7 @@ func (d *DB) BrowseTitles(ctx context.Context, source, composer string) ([]Brows
 // BrowseTracks returns playable tracks matching source+composer+title.
 func (d *DB) BrowseTracks(ctx context.Context, source, composer, title string, limit int) ([]*core.Track, error) {
 	q := `SELECT ` + trackCols + ` FROM tracks
-	      WHERE status='done' AND opus_path IS NOT NULL
+	      WHERE status='done' AND caf_path IS NOT NULL AND dup_of IS NULL
 	        AND source=? AND composer=? AND title IS NOT DISTINCT FROM ?
 	      ORDER BY title COLLATE NOCASE LIMIT ?`
 	return d.queryTracks(ctx, q, source, composer, title, limit)

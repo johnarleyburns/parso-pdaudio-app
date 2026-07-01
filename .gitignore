@@ -13,5 +13,18 @@ parso-pdaudio.exe
 *.db-wal
 *.db-shm
 
+# R2 / cloud + API secrets — NEVER commit bucket name, credentials, or API keys
+r2.config.json
+.parso-r2.json
+*.r2.json
+.deepseek-api-key
+*-api-key
+.env
+.env.*
+
+# Swift package build output
+swift/.build/
+.build/
+
 # OS / editor
 .DS_Store

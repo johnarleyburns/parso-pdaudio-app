@@ -31,6 +31,22 @@ func main() {
 }
 
 func run(args []string) error {
+	// Maintenance/data subcommands run outside the discovery pipeline.
+	if len(args) > 0 {
+		switch args[0] {
+		case "compact":
+			return runCompact(args[1:])
+		case "enrich":
+			return runEnrich(args[1:])
+		case "dedup":
+			return runDedup(args[1:])
+		case "sync":
+			return runSync(args[1:])
+		case "r2check":
+			return runR2Check(args[1:])
+		}
+	}
+
 	cfg, err := config.Parse(args)
 	if err != nil {
 		return err

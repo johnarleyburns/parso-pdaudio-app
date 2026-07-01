@@ -298,13 +298,17 @@ func (e *Engine) stepCleaner(ctx context.Context, wid string) bool {
 
 	opus := e.opusPath(t.ID)
 	caf := e.cafPath(t.ID)
-	if !nonEmpty(opus) || !nonEmpty(caf) {
-		return e.failTrack(ctx, t, StageCleaner, fmt.Errorf("missing opus/caf before cleanup"))
+	// CAF (lossless Opus-in-CAF) is the sole persisted audio format. The caf
+	// must exist; the standalone opus and the source download are deleted here
+	// to avoid wasting space, and opus_path is nulled in the DB.
+	if !nonEmpty(caf) {
+		return e.failTrack(ctx, t, StageCleaner, fmt.Errorf("missing caf before cleanup"))
 	}
 	if !e.cfg.KeepSource {
 		_ = os.Remove(e.srcPath(t.ID, t.OriginalFormat))
 	}
-	if err := e.store.SetDone(ctx, t.ID); err != nil {
+	_ = os.Remove(opus)
+	if err := e.store.SetDoneCAFOnly(ctx, t.ID); err != nil {
 		return e.failTrack(ctx, t, StageCleaner, err)
 	}
 	e.emit(core.ProgressMsg{Source: t.Source, Stage: StageCleaner, TrackID: t.ID, Completed: true})

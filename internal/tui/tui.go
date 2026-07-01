@@ -87,14 +87,15 @@ type Model struct {
 	tickCount    int
 
 	// browse pane
-	browseLevel       int // 0=source, 1=composer, 2=title, 3=tracks
+	browseLevel       int // 0=source, 1=composer, 2=work, 3=tracks
 	browseSel         int
 	browseSelSource   string
 	browseSelComposer string
-	browseSelTitle    string
+	browseSelTitle    string // display name of the selected work (crumb)
+	browseSelWorkKey  string // works.id or "title:<title>" key for WorkTracks
 	browseSources     []db.BrowseEntry
 	browseComposers   []db.BrowseEntry
-	browseTitles      []db.BrowseEntry
+	browseTitles      []db.BrowseEntry // works at level 2
 	browseTracks      []*core.Track
 
 	// controls
@@ -242,11 +243,13 @@ func (m Model) refreshBrowseComposersCmd(source string) tea.Cmd {
 	}
 }
 
+// refreshBrowseTitlesCmd loads the works (grouped movements) for a source+
+// composer at browse level 2.
 func (m Model) refreshBrowseTitlesCmd(source, composer string) tea.Cmd {
 	ctx := m.ctx
 	store := m.store
 	return func() tea.Msg {
-		nodes, err := store.BrowseTitles(ctx, source, composer)
+		nodes, err := store.BrowseWorks(ctx, source, composer)
 		if err != nil {
 			return browseTitlesMsg{}
 		}
@@ -254,11 +257,12 @@ func (m Model) refreshBrowseTitlesCmd(source, composer string) tea.Cmd {
 	}
 }
 
-func (m Model) refreshBrowseTracksCmd(source, composer, title string) tea.Cmd {
+// refreshBrowseTracksCmd loads the movements/tracks of a work at level 3.
+func (m Model) refreshBrowseTracksCmd(workKey string) tea.Cmd {
 	ctx := m.ctx
 	store := m.store
 	return func() tea.Msg {
-		tracks, err := store.BrowseTracks(ctx, source, composer, title, 200)
+		tracks, err := store.WorkTracks(ctx, workKey, 200)
 		if err != nil {
 			return browseTracksMsg{}
 		}
