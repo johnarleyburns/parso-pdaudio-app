@@ -84,6 +84,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case browseTracksMsg:
+		m.browseTracks = msg.tracks
+		if m.browseSel >= len(msg.tracks) {
+			m.browseSel = max(0, len(msg.tracks)-1)
+		}
+		return m, nil
+
 	case tickMsg:
 		return m.onTick(time.Time(msg))
 
@@ -249,8 +256,7 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "down", "ctrl+n":
 		if m.tab == tabBrowse {
-			nodes := m.browseNodes()
-			if m.browseSel < len(nodes)-1 {
+			if m.browseSel < m.browseCount()-1 {
 				m.browseSel++
 			}
 			return m, nil
@@ -270,9 +276,8 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.rememberSelection()
 	case "G", "end":
 		if m.tab == tabBrowse {
-			nodes := m.browseNodes()
-			if len(nodes) > 0 {
-				m.browseSel = len(nodes) - 1
+			if count := m.browseCount(); count > 0 {
+				m.browseSel = count - 1
 			}
 			return m, nil
 		}
@@ -316,7 +321,10 @@ func (m *Model) playSelected() tea.Cmd {
 	if m.sel < 0 || m.sel >= len(m.tracks) {
 		return nil
 	}
-	t := m.tracks[m.sel]
+	return m.playTrack(m.tracks[m.sel])
+}
+
+func (m *Model) playTrack(t *core.Track) tea.Cmd {
 	if t == nil {
 		return nil
 	}
@@ -388,8 +396,28 @@ func (m *Model) browseNodes() []db.BrowseEntry {
 		return m.browseComposers
 	case 2:
 		return m.browseTitles
+	case 3:
+		entries := make([]db.BrowseEntry, len(m.browseTracks))
+		for i, t := range m.browseTracks {
+			entries[i] = db.BrowseEntry{Name: displayTitle(t), Key: t.ID}
+		}
+		return entries
 	}
 	return nil
+}
+
+func (m *Model) browseCount() int {
+	switch m.browseLevel {
+	case 0:
+		return len(m.browseSources)
+	case 1:
+		return len(m.browseComposers)
+	case 2:
+		return len(m.browseTitles)
+	case 3:
+		return len(m.browseTracks)
+	}
+	return 0
 }
 
 func (m *Model) switchToBrowseTab() {
@@ -398,9 +426,11 @@ func (m *Model) switchToBrowseTab() {
 	m.browseSel = 0
 	m.browseSelSource = ""
 	m.browseSelComposer = ""
+	m.browseSelTitle = ""
 	m.browseSources = nil
 	m.browseComposers = nil
 	m.browseTitles = nil
+	m.browseTracks = nil
 }
 
 func (m Model) browseDrill() (tea.Model, tea.Cmd) {
@@ -423,6 +453,15 @@ func (m Model) browseDrill() (tea.Model, tea.Cmd) {
 		m.browseTitles = nil
 		return m, m.refreshBrowseTitlesCmd(m.browseSelSource, sel.Key)
 	case 2:
+		m.browseLevel = 3
+		m.browseSelTitle = sel.Name
+		m.browseSel = 0
+		m.browseTracks = nil
+		return m, m.refreshBrowseTracksCmd(m.browseSelSource, m.browseSelComposer, sel.Key)
+	case 3:
+		if m.browseSel >= 0 && m.browseSel < len(m.browseTracks) {
+			return m, m.playTrack(m.browseTracks[m.browseSel])
+		}
 		return m, nil
 	}
 	return m, nil
@@ -435,13 +474,21 @@ func (m Model) browseBack() (tea.Model, tea.Cmd) {
 		m.browseSelSource = ""
 		m.browseSel = 0
 		m.browseComposers = nil
+		m.browseTracks = nil
 		return m, m.refreshBrowseSourcesCmd()
 	case 2:
 		m.browseLevel = 1
 		m.browseSelComposer = ""
 		m.browseSel = 0
 		m.browseTitles = nil
+		m.browseTracks = nil
 		return m, m.refreshBrowseComposersCmd(m.browseSelSource)
+	case 3:
+		m.browseLevel = 2
+		m.browseSelTitle = ""
+		m.browseSel = 0
+		m.browseTracks = nil
+		return m, m.refreshBrowseTitlesCmd(m.browseSelSource, m.browseSelComposer)
 	}
 	return m, nil
 }
@@ -454,6 +501,11 @@ func (m Model) refreshBrowseCurrentCmd() tea.Cmd {
 		return m.refreshBrowseComposersCmd(m.browseSelSource)
 	case 2:
 		return m.refreshBrowseTitlesCmd(m.browseSelSource, m.browseSelComposer)
+	case 3:
+		if m.browseSelTitle != "" {
+			return m.refreshBrowseTracksCmd(m.browseSelSource, m.browseSelComposer, m.browseSelTitle)
+		}
+		return nil
 	}
 	return nil
 }

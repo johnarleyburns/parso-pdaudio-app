@@ -565,7 +565,8 @@ func (d *DB) BrowseComposers(ctx context.Context, source string) ([]BrowseEntry,
 func (d *DB) BrowseTitles(ctx context.Context, source, composer string) ([]BrowseEntry, error) {
 	rows, err := d.sql.QueryContext(ctx,
 		`SELECT title, COUNT(*) FROM tracks
-		 WHERE status='done' AND opus_path IS NOT NULL AND source=? AND composer=?`,
+		 WHERE status='done' AND opus_path IS NOT NULL AND source=? AND (composer IS NOT DISTINCT FROM ?)
+		 GROUP BY title COLLATE NOCASE ORDER BY title COLLATE NOCASE`,
 		source, composer)
 	if err != nil {
 		return nil, err

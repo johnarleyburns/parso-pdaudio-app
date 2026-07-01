@@ -453,11 +453,27 @@ func (m Model) renderBrowse(h int) string {
 			crumbs[len(crumbs)-1] = "—"
 		}
 	}
+	if m.browseLevel >= 3 && m.browseSelTitle != "" {
+		crumbs = append(crumbs, m.browseSelTitle)
+		if m.browseSelTitle == "" {
+			crumbs[len(crumbs)-1] = "—"
+		}
+	}
 	crumbStr := strings.Join(crumbs, " > ")
 	b.WriteString(dimStyle.Render(crumbStr))
 	b.WriteString("\n\n")
 
-	// Determine which nodes to show and header text.
+	bodyH := h - 4
+	if bodyH < 1 {
+		bodyH = 1
+	}
+
+	// Level 3: render tracks.
+	if m.browseLevel == 3 {
+		return m.renderBrowseTracks(bodyH, &b)
+	}
+
+	// Levels 0-2: render browse entries.
 	var nodes []db.BrowseEntry
 	var headerLabel string
 	switch m.browseLevel {
@@ -481,10 +497,6 @@ func (m Model) renderBrowse(h int) string {
 	b.WriteString(header)
 	b.WriteString("\n")
 
-	bodyH := h - 4
-	if bodyH < 1 {
-		bodyH = 1
-	}
 	rows := bodyH
 	if rows < 1 {
 		rows = 1
@@ -520,6 +532,49 @@ func (m Model) renderBrowse(h int) string {
 				b.WriteString("\n")
 			}
 		}
+	}
+	return b.String()
+}
+
+func (m Model) renderBrowseTracks(bodyH int, b *strings.Builder) string {
+	header := headerStyle.Render(fmt.Sprintf("%-7s %-14s %-60s %s", "ST", "COMPOSER", "TITLE", "SIZE"))
+	info := fmt.Sprintf("%d tracks shown", len(m.browseTracks))
+	b.WriteString(fmt.Sprintf("%s  %s", header, dimStyle.Render(info)))
+	b.WriteString("\n")
+
+	rows := bodyH - 2
+	if rows < 1 {
+		rows = 1
+	}
+
+	start := 0
+	if m.browseSel >= rows {
+		start = m.browseSel - rows + 1
+	}
+	end := start + rows
+	if end > len(m.browseTracks) {
+		end = len(m.browseTracks)
+	}
+
+	contentW := m.width - 6
+	if contentW < 40 {
+		contentW = 40
+	}
+
+	if len(m.browseTracks) == 0 {
+		b.WriteString(dimStyle.Render("(no tracks yet)"))
+	} else {
+		var lines []string
+		for i := start; i < end; i++ {
+			t := m.browseTracks[i]
+			line := trackRow(t, m.nowPlaying)
+			if i == m.browseSel {
+				lines = append(lines, selStyle.Render(padRight(">"+line, contentW)))
+			} else {
+				lines = append(lines, " "+line)
+			}
+		}
+		b.WriteString(strings.Join(lines, "\n"))
 	}
 	return b.String()
 }

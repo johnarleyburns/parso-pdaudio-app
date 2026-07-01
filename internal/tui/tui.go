@@ -44,6 +44,7 @@ type (
 	browseSourcesMsg   struct{ nodes []db.BrowseEntry }
 	browseComposersMsg struct{ nodes []db.BrowseEntry }
 	browseTitlesMsg    struct{ nodes []db.BrowseEntry }
+	browseTracksMsg    struct{ tracks []*core.Track }
 )
 
 type srcRate struct {
@@ -86,13 +87,15 @@ type Model struct {
 	tickCount    int
 
 	// browse pane
-	browseLevel       int // 0=source, 1=composer, 2=title
+	browseLevel       int // 0=source, 1=composer, 2=title, 3=tracks
 	browseSel         int
 	browseSelSource   string
 	browseSelComposer string
+	browseSelTitle    string
 	browseSources     []db.BrowseEntry
 	browseComposers   []db.BrowseEntry
 	browseTitles      []db.BrowseEntry
+	browseTracks      []*core.Track
 
 	// controls
 	focusPool int
@@ -248,5 +251,17 @@ func (m Model) refreshBrowseTitlesCmd(source, composer string) tea.Cmd {
 			return browseTitlesMsg{}
 		}
 		return browseTitlesMsg{nodes: nodes}
+	}
+}
+
+func (m Model) refreshBrowseTracksCmd(source, composer, title string) tea.Cmd {
+	ctx := m.ctx
+	store := m.store
+	return func() tea.Msg {
+		tracks, err := store.BrowseTracks(ctx, source, composer, title, 200)
+		if err != nil {
+			return browseTracksMsg{}
+		}
+		return browseTracksMsg{tracks: tracks}
 	}
 }
