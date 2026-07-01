@@ -11,8 +11,12 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
+	neturl "net/url"
 	"os"
 	"path/filepath"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -33,6 +37,7 @@ func run(args []string) error {
 	localDB := fs.String("db", "", "use a local library.db instead of downloading from R2")
 	cacheDir := fs.String("cache", defaultCacheDir(), "local cache directory (DB + streamed audio)")
 	refresh := fs.Bool("refresh", false, "re-download the DB from R2 even if cached")
+	check := fs.Bool("check", false, "headless connectivity check: download DB, browse, presign+fetch a track, then exit")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -77,15 +82,120 @@ func run(args []string) error {
 	}
 	defer store.Close()
 
-	pl := player.New()
 	audioCache := filepath.Join(*cacheDir, "audio")
 	_ = os.MkdirAll(audioCache, 0o755)
 
+	if *check {
+		return runCheck(store, client)
+	}
+
+	pl := player.New()
 	m := newModel(store, pl, client, audioCache)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err = p.Run()
 	pl.Stop()
 	return err
+}
+
+// runCheck exercises the read-only consumer path headlessly: it confirms the DB
+// opened (already downloaded above), browses the work tree, then presigns and
+// fetches a real track's CAF from R2 — printing a masked URL (no secrets).
+func runCheck(store *db.DB, client *r2.Client) error {
+	ctx := context.Background()
+	sources, err := store.BrowseSources(ctx)
+	if err != nil {
+		return err
+	}
+	var totalWorks, totalTracks int
+	for _, s := range sources {
+		totalTracks += s.Count
+	}
+	works, _ := store.SQL().QueryContext(ctx, `SELECT COUNT(*) FROM works`)
+	if works != nil {
+		for works.Next() {
+			_ = works.Scan(&totalWorks)
+		}
+		works.Close()
+	}
+	fmt.Printf("DB opened: %d sources, %d works, %d playable tracks\n",
+		len(sources), totalWorks, totalTracks)
+	if len(sources) > 0 {
+		fmt.Printf("  first source: %s (%d)\n", sources[0].Name, sources[0].Count)
+	}
+
+	// Probe in upload order (by id) so the check finds an uploaded CAF during a
+	// partial sync.
+	tracks, err := store.ListCanonicalCAF(ctx)
+	if err != nil || len(tracks) == 0 {
+		return fmt.Errorf("no playable track found: %v", err)
+	}
+
+	if client == nil {
+		fmt.Printf("sample track: %s (id=%s)\n", tracks[0].DisplayTitleText, tracks[0].ID)
+		fmt.Println("(no R2 client; skipping audio URL)")
+		return nil
+	}
+
+	// Find a track whose CAF is already uploaded (HEAD-probe candidates), so the
+	// check works during a partial sync.
+	t := tracks[0]
+	found := false
+	for _, cand := range tracks {
+		exists, _, herr := client.HeadObject(ctx, "audio/"+cand.ID+".caf")
+		if herr != nil {
+			return fmt.Errorf("HEAD failed (auth?): %w", herr)
+		}
+		if exists {
+			t = cand
+			found = true
+			break
+		}
+	}
+	fmt.Printf("sample track: %s\n  id=%s caf=%s (uploaded=%v)\n",
+		t.DisplayTitleText, t.ID, t.CafPath, found)
+	if !found {
+		fmt.Println("auth OK (HEAD signed & accepted) but no probed CAF uploaded yet — re-run after sync.")
+		return nil
+	}
+	key := "audio/" + t.ID + ".caf"
+	url, err := client.PresignGet(key, 15*time.Minute)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("presigned audio URL: %s\n", maskURL(url))
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req.Header.Set("Range", "bytes=0-0")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("fetch audio: %w", err)
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		return fmt.Errorf("audio fetch returned HTTP %d", resp.StatusCode)
+	}
+	fmt.Printf("audio reachable: HTTP %d, content-type=%s, content-length=%s\n",
+		resp.StatusCode, resp.Header.Get("Content-Type"), resp.Header.Get("Content-Range"))
+	fmt.Println("OK — read-only consumer path verified end-to-end.")
+	return nil
+}
+
+// maskURL hides the signature and credential query params so no key material is
+// printed while still showing the object path.
+func maskURL(raw string) string {
+	u, err := neturl.Parse(raw)
+	if err != nil {
+		return "(unparseable)"
+	}
+	q := u.Query()
+	for _, k := range []string{"X-Amz-Signature", "X-Amz-Credential"} {
+		if q.Get(k) != "" {
+			q.Set(k, "REDACTED")
+		}
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 func defaultCacheDir() string {
