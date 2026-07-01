@@ -611,21 +611,10 @@ func (m Model) totalRate() float64 {
 	return sum
 }
 
+// displayTitle renders a track's fully-qualified label, preferring enriched
+// composer/work/movement fields and falling back to the raw title.
 func displayTitle(t *core.Track) string {
-	name := t.Title
-	if name == "" {
-		name = t.Work
-	}
-	if name == "" {
-		name = t.SourceItem
-	}
-	if name == "" {
-		name = t.ID
-	}
-	if t.Composer != "" {
-		return t.Composer + " — " + truncate(name, 40)
-	}
-	return "[" + t.Source + "] " + truncate(name, 40)
+	return truncate(core.DisplayTitle(t, core.DisplayGlobal), 60)
 }
 
 func fmtDuration(sec float64) string {

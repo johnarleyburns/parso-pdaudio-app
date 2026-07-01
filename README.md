@@ -10,12 +10,107 @@ and listen to downloaded tracks to verify them on the spot.
 
 - Pulls recordings from **10 sources** (3 Internet Archive items + 7 Wikimedia Commons searches).
 - For each track: downloads the best-available native file (preference `opus > ogg > wav > mp3`),
-  converts it to a canonical `.opus`, packages a sibling `.caf`, then deletes the native download.
+  converts it to Opus, packages a `.caf` (lossless Opus-in-CAF), then deletes both the native
+  download **and** the standalone `.opus` — the `.caf` is the sole persisted audio format.
 - Stores the SQLite DB and all media in one flat directory; records structured metadata, license,
   provenance (URL/format/codec/bytes/sha1), plus a stopword-filtered keyword index and an FTS5 index.
 - The whole job is **resumable** (state lives in the DB) and **crash-safe** (the DB is the work queue).
 - Presents a per-source dashboard (counts, %, ETA, throughput), a combined searchable track list,
   live worker-pool scaling, and an integrated audio player.
+
+## Post-processing & publishing pipeline
+
+After the library is downloaded, a set of subcommands enrich the metadata, remove
+duplicates, and publish everything to a Cloudflare R2 bucket. Run them in order:
+
+```sh
+# 0. Reclaim space: CAF (lossless Opus-in-CAF) is the sole persisted format, so
+#    delete the redundant standalone .opus and .src.* files.
+./parso-pdaudio compact --dir ./library
+
+# 1-3. LLM enrichment: extract & validate composer/work/movement, correct
+#      mis-attributed composers, group movements into works, and precompute
+#      context-aware display titles. Uses the DeepSeek API — key read from
+#      $DEEPSEEK_API_KEY or ~/.deepseek-api-key (never logged/committed).
+./parso-pdaudio enrich --dir ./library
+
+# 4. Dedup: fingerprint (Chromaprint/fpcalc) and collapse the same recording
+#    appearing under multiple sources to one canonical track.
+./parso-pdaudio dedup --dir ./library
+
+# 5. Publish: upload canonical CAF files (audio/<id>.caf) + the distribution DB
+#    (db/library.db) to R2. Refuses to run until dedup has completed.
+./parso-pdaudio sync --dir ./library
+```
+
+R2 credentials are **secrets** and are never committed. Configure them via
+`~/.parso-r2.json` / `./r2.config.json` (see `r2.config.example`) or `R2_*` env
+vars; the account id also falls back to `~/.cloudflare-r2-api-account-id`.
+
+## `parso-player` — standalone terminal client
+
+A separate binary that consumes a library published to R2: it downloads the
+distribution DB, lets you browse/search, and **streams CAF from R2** on demand
+(cached locally). It is read-only against the bucket and never writes to R2.
+
+### Build
+
+```sh
+go build -o parso-player ./cmd/parso-player
+```
+
+### Configure
+
+Playback needs read access to the bucket. Provide R2 settings exactly as for
+`sync` — either `~/.parso-r2.json` / `./r2.config.json` (see `r2.config.example`)
+or `R2_*` env vars. For a public bucket you only need `R2_PUBLIC_BASE_URL` (audio
+is fetched over plain HTTPS); for a private bucket you need the full credentials.
+
+### Run
+
+```sh
+# Download the DB from R2 (cached), then browse/search/play:
+./parso-player
+
+# Force a fresh DB download:
+./parso-player --refresh
+
+# Use a local DB instead of downloading (browsing works even without R2 creds;
+# playback still needs bucket access):
+./parso-player --db ./library/library.db
+
+# Custom cache directory (DB + streamed CAF files):
+./parso-player --cache ~/.cache/parso
+```
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--db PATH` | *(download)* | Open a local `library.db` instead of downloading from R2 |
+| `--cache DIR` | OS cache dir `/parso-player` | Where the DB and streamed CAF files are cached |
+| `--refresh` | `false` | Re-download the DB even if a cached copy exists |
+
+### Keys
+
+| Key | Action |
+|-----|--------|
+| `/` | Search (Enter runs, Esc returns to browse) |
+| `↑`/`↓` or `j`/`k` | Move selection |
+| `Enter` | Open a source/composer/work, or **play** a track/result |
+| `Backspace` | Up one browse level |
+| `Space` | Pause / resume |
+| `←` / `→` | Seek −/+ 10s |
+| `g` / `G` | Jump to top / bottom |
+| `q` | Quit |
+
+The browse tree is **source → composer → work → movement**. The first playback of
+a track downloads its `audio/<id>.caf` into the cache; subsequent plays are local.
+
+## `swift/ParsoKit` — embed a library in your app
+
+A publishable SwiftPM package that opens the DB (download / local / bundled),
+browses & searches, and vends R2 CAF stream URLs for AVFoundation. **No player is
+included** — you own playback. See **[`swift/README.md`](swift/README.md)** for
+the full API reference and a step-by-step SwiftUI + AVFoundation embedding guide.
 
 ## Requirements
 
@@ -24,6 +119,10 @@ and listen to downloaded tracks to verify them on the spot.
   still run but convert/package/cleaner are disabled.
 - For the built-in player: **`afplay`** (macOS, built-in — uses CoreAudio, the same stack as iOS) or
   **`ffplay`** (ships with ffmpeg) elsewhere.
+- For `enrich`: a **DeepSeek API key** in `$DEEPSEEK_API_KEY` or `~/.deepseek-api-key`
+  (uses the DeepSeek chat-completions API; the key is never logged or committed).
+- For `dedup`: **`fpcalc`** (Chromaprint, e.g. `brew install chromaprint`) for acoustic
+  fingerprinting. If absent, dedup falls back to exact size+duration+sha1 matching.
 
 ## Build
 
